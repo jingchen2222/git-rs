@@ -1,5 +1,5 @@
 use crate::repo::GitRepository;
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::Parser;
 use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[clap(name = "git-rs")]
@@ -22,7 +22,7 @@ impl GitCommand {
                 Ok(_) => {
                     println!(
                         "Initialized empty Git repository in {}",
-                        repo.repo_dir.display()
+                        repo.repo_path.display()
                     );
                 }
                 Err(err) => {

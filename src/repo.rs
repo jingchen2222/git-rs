@@ -2,56 +2,59 @@ use crate::error::GitError;
 use std::path::PathBuf;
 use std::{env, fs};
 
+const BLOBS_DIR: &str = "blobs";
+const COMMITS_DIR: &str = "commits";
+const GIT_DIR: &str = ".git-rs";
+
 pub struct GitRepository {
-    pub repo_dir: PathBuf,
-    pub objects_dir: PathBuf,
+    pub repo_path: PathBuf,
+    pub blobs_path: PathBuf,
+    pub commits_path: PathBuf,
 }
 
 impl GitRepository {
     pub fn new() -> Self {
-        let repo_dir = env::current_dir().unwrap().join(".git-rs");
+        let repo_path = &env::current_dir().unwrap().join(GIT_DIR);
         Self {
-            repo_dir: repo_dir.clone(),
-            objects_dir: repo_dir.clone().join("objects"),
+            repo_path: repo_path.to_owned(),
+            blobs_path: repo_path.join(BLOBS_DIR),
+            commits_path: repo_path.join(COMMITS_DIR),
         }
     }
-    fn init_repo(&self) -> Result<(), GitError> {
-        if !self.repo_dir.exists() {
-            match fs::create_dir(&self.repo_dir) {
+    fn init_repo_dir(path: &PathBuf) -> Result<(), GitError> {
+        if !path.exists() {
+            match fs::create_dir(path) {
                 Ok(_) => Ok(()),
                 Err(err) => Err(GitError::GitInitError(format!("{:?}", err))),
             }
-        } else if self.repo_dir.is_file() {
+        } else if path.is_file() {
             Err(GitError::GitInitError(format!(
                 "invalid {} file format",
-                self.repo_dir.display()
+                path.display()
             )))
         } else {
             Ok(())
         }
     }
-    fn init_objects(&self) -> Result<(), GitError> {
-        if !self.objects_dir.exists() {
-            match fs::create_dir(&self.objects_dir) {
-                Ok(_) => Ok(()),
-                Err(err) => Err(GitError::GitInitError(format!("{:?}", err))),
-            }
-        } else if self.objects_dir.is_file() {
-            Err(GitError::GitInitError(format!(
-                "invalid {} file format",
-                self.objects_dir.display()
-            )))
-        } else {
-            Ok(())
-        }
-    }
+
     pub fn init(&self) -> Result<(), GitError> {
-        self.init_repo()?;
-        self.init_objects()
+        Self::init_repo_dir(&self.repo_path)?;
+        Self::init_repo_dir(&self.blobs_path)?;
+        Self::init_repo_dir(&self.commits_path)?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_repo_dir_ut() {
+        let tmp_path = &env::current_dir().unwrap().join("temp");
+        assert!(GitRepository::init_repo_dir(tmp_path).is_ok());
+        assert!(tmp_path.exists());
+        assert!(tmp_path.is_dir());
+        fs::remove_dir(tmp_path);
+    }
 }
