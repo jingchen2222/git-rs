@@ -1,3 +1,6 @@
+use clap::Parser;
+use git_rs::cmd::GitCommand;
 fn main() {
-    println!("Hello, world!");
+    let command = GitCommand::parse();
+    command.execute();
 }
