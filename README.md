@@ -3,9 +3,9 @@ git rust version
 
 ## Roadmap
 
-- [ ] Setup project
-- [ ] Git init
-- [ ] Git add
+- [x] Setup project
+- [x] Git init
+- [x] Git add
 - [ ] Git status
 - [ ] Git commit
 - [ ] Git revert
