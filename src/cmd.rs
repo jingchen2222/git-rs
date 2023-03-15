@@ -1,6 +1,5 @@
 use crate::repo::GitRepository;
 use clap::Parser;
-use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[clap(name = "git-rs")]
 pub enum GitCommand {
@@ -10,13 +9,14 @@ pub enum GitCommand {
     Add {
         /// Stuff to add
         #[arg(required = true)]
-        path: Vec<PathBuf>,
+        paths: Vec<String>,
     },
 }
 
 impl GitCommand {
+
     pub fn execute(self) {
-        let repo = GitRepository::new();
+        let mut repo = GitRepository::new();
         match self {
             GitCommand::Init {} => match repo.init() {
                 Ok(_) => {
@@ -29,9 +29,14 @@ impl GitCommand {
                     println!("{:?}", err);
                 }
             },
-            GitCommand::Add { path } => {
-                println!("{:?}", path);
-            }
+            GitCommand::Add { paths } => match repo.add(&paths) {
+                Ok(_) => {
+                }
+                Err(err) => {
+                    println!("{:?}", err);
+                }
+            },
+
         }
     }
 }
