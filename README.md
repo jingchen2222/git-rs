@@ -1,6 +1,17 @@
 # git-rs
 git rust version
 
+## Roadmap
+
+- [ ] Setup project
+- [ ] Git init
+- [ ] Git add
+- [ ] Git status
+- [ ] Git commit
+- [ ] Git revert
+- [ ] Git branch
+- [ ] Git checkout
+
 ## Compile
 
 ```
