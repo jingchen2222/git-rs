@@ -29,19 +29,16 @@ impl StagingArea {
     pub fn add(&mut self, path: String, hash: String) {
         self.staged.insert(path, hash);
     }
-
-    /// persistence staged area
-    /// 1. serialize StageArea into json string
-    /// 2. write/update serialized string into staging area file
-    pub fn persist(&self, path: &PathBuf) -> Result<(), GitError> {
-        let mut file =
-            fs::File::create(&path).map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
-        let content =
-            serde_json::to_string(self).map_err(|e| GitError::SerdeOpError(format!("{:?}", e)))?;
-        file.write_all(content.as_bytes())
-            .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
-        Ok(())
-    }
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct CommitMeta {
+    message: String,
+    date_time: i64,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Commit {
+    meta: CommitMeta,
+    blobs: BTreeMap<String, String>,
 }
 pub struct GitRepository {
     pub repo_path: PathBuf,
@@ -130,7 +127,20 @@ impl GitRepository {
 
     /// persist staging area info into index file
     fn persist_staging_area(&self) -> Result<(), GitError> {
-        self.staging_area.persist(&self.index_file)
+        Self::persist(&self.staging_area, &self.index_file)
+    }
+
+    /// persistence staged area
+    /// 1. serialize StageArea into json string
+    /// 2. write/update serialized string into staging area file
+    fn persist<T: Serialize>(value: &T, path: &PathBuf) -> Result<(), GitError> {
+        let mut file =
+            fs::File::create(&path).map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+        let content =
+            serde_json::to_string(value).map_err(|e| GitError::SerdeOpError(format!("{:?}", e)))?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+        Ok(())
     }
 }
 
@@ -251,8 +261,8 @@ mod tests {
     }
 
     #[test]
-    fn staged_area_persist_ut() {
-        let tmp_dir = &env::current_dir().unwrap().join("staged_area_persist_ut");
+    fn persist_staging_area_ut() {
+        let tmp_dir = &env::current_dir().unwrap().join("persist_staging_area_ut");
         assert!(fs::create_dir_all(tmp_dir).is_ok());
 
         let tmp_file = tmp_dir.join("area");
@@ -264,7 +274,7 @@ mod tests {
             ]),
             deleted: Vec::new(),
         };
-        let res = area.persist(&tmp_file);
+        let res = GitRepository::persist(&area, &tmp_file);
         assert!(res.is_ok(), "{:?}", res);
 
         let mut file = fs::File::open(&tmp_file).unwrap();
@@ -273,6 +283,38 @@ mod tests {
 
         assert_eq!(
             r#"{"staged":{"file1":"hash1","file2":"hash2"},"deleted":[]}"#,
+            content.as_str()
+        );
+        assert!(fs::remove_file(&tmp_file).is_ok());
+        assert!(fs::remove_dir(&tmp_dir).is_ok());
+    }
+
+    #[test]
+    fn persist_commit_ut() {
+        let tmp_dir = &env::current_dir().unwrap().join("persist_commit_ut");
+        assert!(fs::create_dir_all(tmp_dir).is_ok());
+
+        let tmp_file = tmp_dir.join("commit");
+
+        let area = Commit {
+            meta: CommitMeta {
+                message: "persist commit ut message".to_string(),
+                date_time: 1234567890,
+            },
+            blobs: BTreeMap::from([
+                ("file1".to_string(), "hash1".to_string()),
+                ("file2".to_string(), "hash2".to_string()),
+            ]),
+        };
+        let res = GitRepository::persist(&area, &tmp_file);
+        assert!(res.is_ok(), "{:?}", res);
+
+        let mut file = fs::File::open(&tmp_file).unwrap();
+        let mut content = String::new();
+        assert!(file.read_to_string(&mut content).is_ok());
+
+        assert_eq!(
+            r#"{"meta":{"message":"persist commit ut message","date_time":1234567890},"blobs":{"file1":"hash1","file2":"hash2"}}"#,
             content.as_str()
         );
         assert!(fs::remove_file(&tmp_file).is_ok());
