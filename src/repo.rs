@@ -12,6 +12,7 @@ const COMMITS_DIR: &str = "commits";
 const INDEX_FILE: &str = "index";
 const HEAD_FILE: &str = "HEAD";
 const HEADS_DIR: &str = "refs/heads";
+const MAIN_BRANCH: &str = "main";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct StagingArea {
@@ -90,14 +91,21 @@ impl GitRepository {
         Self::init_repo_dir(&self.blobs_path)?;
         Self::init_repo_dir(&self.commits_path)?;
         Self::init_repo_dir(&self.heads_path)?;
-        Self::init_repo_file(&self.head_file)?;
-        Self::init_repo_file(&self.index_file)?;
+        Self::init_repo_file(&self.heads_path.join(MAIN_BRANCH), "")?;
+        Self::init_repo_file(
+            &self.head_file,
+            format!("{}/{}", HEADS_DIR, MAIN_BRANCH).as_str(),
+        )?;
+        Self::init_repo_file(&self.index_file, "")?;
         Ok(())
     }
 
-    fn init_repo_file(path: &PathBuf) -> Result<(), GitError> {
+    fn init_repo_file(path: &PathBuf, content: &str) -> Result<(), GitError> {
         if !path.exists() {
-            fs::File::create(path).map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+            let mut file =
+                fs::File::create(path).map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+            file.write_all(content.as_bytes())
+                .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
         }
         Ok(())
     }
@@ -204,7 +212,9 @@ mod tests {
         assert!(git.commits_path.is_dir());
         assert!(git.heads_path.exists());
         assert!(git.heads_path.is_dir());
+
         assert!(git.head_file.exists());
+        assert!(git.head_file.is_file());
         assert!(git.head_file.is_file());
         assert!(git.index_file.exists());
         assert!(git.index_file.is_file());
