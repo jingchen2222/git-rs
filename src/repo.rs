@@ -11,6 +11,7 @@ const BLOBS_DIR: &str = "blobs";
 const COMMITS_DIR: &str = "commits";
 const INDEX_FILE: &str = "index";
 const HEAD_FILE: &str = "HEAD";
+const HEADS_DIR: &str = "refs/heads";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct StagingArea {
@@ -47,6 +48,7 @@ pub struct GitRepository {
     commits_path: PathBuf,
     head_file: PathBuf,
     index_file: PathBuf,
+    heads_path: PathBuf,
     staging_area: StagingArea,
 }
 
@@ -61,6 +63,7 @@ impl GitRepository {
             commits_path: repo_path.join(COMMITS_DIR),
             head_file: repo_path.join(HEAD_FILE),
             index_file: repo_path.join(INDEX_FILE),
+            heads_path: repo_path.join(HEADS_DIR),
             staging_area: StagingArea::new(),
         }
     }
@@ -68,7 +71,7 @@ impl GitRepository {
     /// init repository directory including .git, commits, blobs, etc
     fn init_repo_dir(path: &PathBuf) -> Result<(), GitError> {
         if !path.exists() {
-            match fs::create_dir(path) {
+            match fs::create_dir_all(path) {
                 Ok(_) => Ok(()),
                 Err(err) => Err(GitError::GitInitError(format!("{:?}", err))),
             }
@@ -86,6 +89,7 @@ impl GitRepository {
         Self::init_repo_dir(&self.repo_path)?;
         Self::init_repo_dir(&self.blobs_path)?;
         Self::init_repo_dir(&self.commits_path)?;
+        Self::init_repo_dir(&self.heads_path)?;
         Self::init_repo_file(&self.head_file)?;
         Self::init_repo_file(&self.index_file)?;
         Ok(())
@@ -192,10 +196,14 @@ mod tests {
 
         assert!(git.init().is_ok());
 
+        assert!(git.repo_path.exists());
+        assert!(git.repo_path.is_dir());
         assert!(git.blobs_path.exists());
         assert!(git.blobs_path.is_dir());
         assert!(git.commits_path.exists());
         assert!(git.commits_path.is_dir());
+        assert!(git.heads_path.exists());
+        assert!(git.heads_path.is_dir());
         assert!(git.head_file.exists());
         assert!(git.head_file.is_file());
         assert!(git.index_file.exists());
