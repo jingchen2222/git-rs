@@ -14,7 +14,6 @@ pub enum GitCommand {
 }
 
 impl GitCommand {
-
     pub fn execute(self) {
         let mut repo = GitRepository::new();
         match self {
@@ -30,13 +29,11 @@ impl GitCommand {
                 }
             },
             GitCommand::Add { paths } => match repo.add(&paths) {
-                Ok(_) => {
-                }
+                Ok(_) => {}
                 Err(err) => {
                     println!("{:?}", err);
                 }
             },
-
         }
     }
 }
