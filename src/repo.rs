@@ -2,7 +2,7 @@ use crate::error::GitError;
 use crate::utils;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::{env, fs};
 
@@ -14,11 +14,12 @@ const HEAD_FILE: &str = "HEAD";
 const HEADS_DIR: &str = "refs/heads";
 const MAIN_BRANCH: &str = "main";
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct StagingArea {
     staged: BTreeMap<String, String>,
     deleted: Vec<String>,
 }
+
 impl StagingArea {
     pub fn new() -> Self {
         Self {
@@ -32,16 +33,31 @@ impl StagingArea {
         self.staged.insert(path, hash);
     }
 }
-#[derive(Debug, Serialize, Deserialize)]
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct CommitMeta {
     message: String,
     date_time: i64,
 }
-#[derive(Debug, Serialize, Deserialize)]
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Commit {
     meta: CommitMeta,
     blobs: BTreeMap<String, String>,
 }
+
+impl Commit {
+    pub fn new() -> Self {
+        Self {
+            meta: CommitMeta {
+                message: "".to_string(),
+                date_time: 0 as i64,
+            },
+            blobs: BTreeMap::new(),
+        }
+    }
+}
+
 pub struct GitRepository {
     pub repo_path: PathBuf,
     cwd: PathBuf,
@@ -51,6 +67,8 @@ pub struct GitRepository {
     index_file: PathBuf,
     heads_path: PathBuf,
     staging_area: StagingArea,
+    commit: Commit,
+    branch: String,
 }
 
 impl GitRepository {
@@ -66,6 +84,8 @@ impl GitRepository {
             index_file: repo_path.join(INDEX_FILE),
             heads_path: repo_path.join(HEADS_DIR),
             staging_area: StagingArea::new(),
+            commit: Commit::new(),
+            branch: MAIN_BRANCH.to_string(),
         }
     }
 
@@ -110,7 +130,21 @@ impl GitRepository {
         Ok(())
     }
 
+    pub fn refresh(&mut self) -> Result<(), GitError> {
+        self.branch = fs::read_to_string(&self.head_file)
+            .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+        println!("branch: {}", self.branch);
+        let commit_sha = fs::read_to_string(&self.repo_path.join(&self.branch))
+            .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+        println!("commit_sha: {}", commit_sha);
+        if !commit_sha.is_empty() {
+            self.commit = Self::unpersist_commit(&self.commits_path.join(&commit_sha))?;
+        }
+        self.staging_area = Self::unpersist_staging_area(&self.index_file)?;
+        Ok(())
+    }
     pub fn add(&mut self, paths: &Vec<String>) -> Result<(), GitError> {
+        self.refresh()?;
         for path in paths.iter() {
             self.add_file(&self.cwd.join(&path))?
         }
@@ -154,6 +188,38 @@ impl GitRepository {
             .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
         Ok(())
     }
+    fn unpersist_commit(path: &PathBuf) -> Result<Commit, GitError> {
+        if !path.exists() || !path.is_file() {
+            Err(GitError::FileNotExistError(path.display().to_string()))
+        } else {
+            let mut file =
+                fs::File::open(path).map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+
+            let mut content = String::new();
+            file.read_to_string(&mut content)
+                .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+
+            let commit =
+                serde_json::from_str(content.as_str()).expect("JSON was not well-formatted");
+            Ok(commit)
+        }
+    }
+    fn unpersist_staging_area(path: &PathBuf) -> Result<StagingArea, GitError> {
+        if !path.exists() || !path.is_file() {
+            Err(GitError::FileNotExistError(path.display().to_string()))
+        } else {
+            let mut file =
+                fs::File::open(path).map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+
+            let mut content = String::new();
+            file.read_to_string(&mut content)
+                .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+
+            let staging_area =
+                serde_json::from_str(content.as_str()).expect("JSON was not well-formatted");
+            Ok(staging_area)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +233,7 @@ mod tests {
             assert!(fs::remove_dir_all(path).is_ok());
         }
     }
+
     #[test]
     fn init_repo_dir_ut() {
         let tmp_path = &env::current_dir().unwrap().join("init_repo_dir_ut");
@@ -221,6 +288,8 @@ mod tests {
 
         // Act git add f1
         assert!(git.add_file(&paths[0]).is_ok());
+        assert_eq!(git.branch, "main");
+        assert_eq!(git.commit, Commit::new());
 
         // Verify staging add file
         let mut file = fs::File::open(&git.index_file).unwrap();
@@ -231,9 +300,9 @@ mod tests {
             content.as_str()
         );
 
+        let res = git.add(&vec!["smoke_ut/f2".to_string()]);
         // Act git add f2
-        assert!(git.add(&vec!["smoke_ut/f2".to_string()]).is_ok());
-
+        assert!(res.is_ok(), "{:?}", res);
         // Verify staging add file
         let mut file = fs::File::open(&git.index_file).unwrap();
         let mut content = String::new();
@@ -267,6 +336,7 @@ mod tests {
         assert_eq!("hash1", deserialized.staged.get("file1").unwrap().as_str());
         assert_eq!("hash2", deserialized.staged.get("file2").unwrap().as_str());
     }
+
     #[test]
     fn staged_area_serialized_deserialized_empty_map_ut() {
         let area = StagingArea::new();
@@ -334,6 +404,63 @@ mod tests {
         assert_eq!(
             r#"{"meta":{"message":"persist commit ut message","date_time":1234567890},"blobs":{"file1":"hash1","file2":"hash2"}}"#,
             content.as_str()
+        );
+        assert!(fs::remove_file(&tmp_file).is_ok());
+        assert!(fs::remove_dir(&tmp_dir).is_ok());
+    }
+
+    #[test]
+    fn unpersist_staging_area_ut() {
+        let tmp_dir = &env::current_dir()
+            .unwrap()
+            .join("unpersist_staging_area_ut");
+        assert!(fs::create_dir_all(tmp_dir).is_ok());
+
+        let tmp_file = tmp_dir.join("area");
+        let mut file = fs::File::create(&tmp_file).unwrap();
+        assert!(file
+            .write_all(r#"{"staged":{"file1":"hash1","file2":"hash2"},"deleted":[]}"#.as_bytes())
+            .is_ok());
+
+        let res = GitRepository::unpersist_staging_area(&tmp_file);
+        assert!(res.is_ok());
+        assert_eq!(
+            StagingArea {
+                staged: BTreeMap::from([
+                    ("file1".to_string(), "hash1".to_string()),
+                    ("file2".to_string(), "hash2".to_string()),
+                ]),
+                deleted: Vec::new(),
+            },
+            res.unwrap()
+        );
+        assert!(fs::remove_file(&tmp_file).is_ok());
+        assert!(fs::remove_dir(&tmp_dir).is_ok());
+    }
+
+    #[test]
+    fn unpersist_commit_ut() {
+        let tmp_dir = &env::current_dir().unwrap().join("unpersist_commit_ut");
+        assert!(fs::create_dir_all(tmp_dir).is_ok());
+
+        let tmp_file = tmp_dir.join("commit");
+        let mut file = fs::File::create(&tmp_file).unwrap();
+        assert!(file.write_all(r#"{"meta":{"message":"persist commit ut message","date_time":1234567890},"blobs":{"file1":"hash1","file2":"hash2"}}"#.as_bytes()).is_ok());
+
+        let res = GitRepository::unpersist_commit(&tmp_file);
+        assert!(res.is_ok());
+        assert_eq!(
+            Commit {
+                meta: CommitMeta {
+                    message: "persist commit ut message".to_string(),
+                    date_time: 1234567890,
+                },
+                blobs: BTreeMap::from([
+                    ("file1".to_string(), "hash1".to_string()),
+                    ("file2".to_string(), "hash2".to_string()),
+                ]),
+            },
+            res.unwrap()
         );
         assert!(fs::remove_file(&tmp_file).is_ok());
         assert!(fs::remove_dir(&tmp_dir).is_ok());
