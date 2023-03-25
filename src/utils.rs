@@ -18,7 +18,7 @@ pub fn crypto_file(path: &PathBuf) -> Result<String, GitError> {
         hasher.input_str(s.as_str());
         Ok(hasher.result_str())
     } else {
-        Err(GitError::FileNotExistError(path.display().to_string()))
+        Err(GitError::FileNotExistError)
     }
 }
 
@@ -26,10 +26,11 @@ pub fn crypto_file(path: &PathBuf) -> Result<String, GitError> {
 /// e.g src/d1/f1 to .git-repo-dir/src/d1/f1
 pub fn copy_to(path: &PathBuf, dist: &PathBuf) -> Result<(), GitError> {
     if path.exists() {
+        println!("copy {} to {}", path.display(), dist.display());
         fs::copy(path, dist).map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
         Ok(())
     } else {
-        Err(GitError::FileNotExistError(path.display().to_string()))
+        Err(GitError::FileNotExistError)
     }
 }
 

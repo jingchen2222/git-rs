@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::{env, fs};
+use chrono::Utc;
 
 const GIT_DIR: &str = ".git-rs";
 const BLOBS_DIR: &str = "blobs";
@@ -17,14 +18,14 @@ const MAIN_BRANCH: &str = "main";
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct StagingArea {
     staged: BTreeMap<String, String>,
-    deleted: Vec<String>,
+    deleted: BTreeMap<String, String>,
 }
 
 impl StagingArea {
     pub fn new() -> Self {
         Self {
             staged: BTreeMap::new(),
-            deleted: Vec::new(),
+            deleted: BTreeMap::new(),
         }
     }
 
@@ -44,6 +45,7 @@ struct CommitMeta {
 pub struct Commit {
     meta: CommitMeta,
     blobs: BTreeMap<String, String>,
+    parent: String,
 }
 
 impl Commit {
@@ -54,6 +56,7 @@ impl Commit {
                 date_time: 0 as i64,
             },
             blobs: BTreeMap::new(),
+            parent: String::new(),
         }
     }
 }
@@ -68,6 +71,7 @@ pub struct GitRepository {
     heads_path: PathBuf,
     staging_area: StagingArea,
     commit: Commit,
+    commit_sha1: String,
     branch: String,
 }
 
@@ -85,6 +89,7 @@ impl GitRepository {
             heads_path: repo_path.join(HEADS_DIR),
             staging_area: StagingArea::new(),
             commit: Commit::new(),
+            commit_sha1: String::new(),
             branch: MAIN_BRANCH.to_string(),
         }
     }
@@ -139,6 +144,7 @@ impl GitRepository {
         println!("commit_sha: {}", commit_sha);
         if !commit_sha.is_empty() {
             self.commit = Self::unpersist_commit(&self.commits_path.join(&commit_sha))?;
+            self.commit_sha1 = commit_sha;
         }
         self.staging_area = Self::unpersist_staging_area(&self.index_file)?;
         Ok(())
@@ -148,6 +154,58 @@ impl GitRepository {
         for path in paths.iter() {
             self.add_file(&self.cwd.join(&path))?
         }
+        Self::persist(&self.staging_area, &self.index_file)?;
+        Ok(())
+    }
+
+    pub fn remove(&mut self, paths: &Vec<String>) -> Result<(), GitError> {
+        self.refresh()?;
+        for path in paths.iter() {
+            self.remove_file(&self.cwd.join(&path))?
+        }
+        Self::persist(&self.staging_area, &self.index_file)?;
+        Ok(())
+    }
+
+    /// create new commit blobs with parent commit's blobs and staging area info
+    fn generate_commit_blobs(old_blobs: &BTreeMap<String, String>, adding_staged: &StagingArea)
+                             -> Result<BTreeMap<String, String>, GitError> {
+        let mut new_blobs = old_blobs.clone();
+        for (k, v) in adding_staged.staged.iter() {
+            new_blobs.insert(k.to_owned(), v.to_owned());
+        }
+
+        for (k, _) in adding_staged.deleted.iter() {
+            new_blobs.remove(k);
+        }
+        Ok(new_blobs)
+    }
+    fn clear_index_file(&mut self) -> Result<(), GitError> {
+        fs::write(&self.index_file, "");
+        Ok(())
+    }
+    pub fn commit(&mut self, msg: &str) -> Result<(), GitError> {
+        println!("commit start...");
+        for (removed_path, v) in self.staging_area.deleted.iter() {
+            fs::remove_file(&self.cwd.join(removed_path))
+                .map_err(|e| GitError::CommitError("fail to remove file from current workspace".to_string()))?;
+        }
+        let blobs = Self::generate_commit_blobs(&self.commit.blobs, &self.staging_area)
+            .map_err(|e| GitError::CommitError(format!("{:?}", e)))?;
+        let commit = Commit {
+            meta: CommitMeta {
+                message: msg.to_string(),
+                date_time: Utc::now().timestamp(),
+            },
+            blobs,
+            parent: self.commit_sha1.clone(),
+        };
+        Self::persist(&commit, &self.commits_path.join("TEMP"))?;
+        let hash = utils::crypto_file(&self.commits_path.join("TEMP"))?;
+        utils::copy_to(&self.commits_path.join("TEMP"), &self.commits_path.join(&hash))?;
+        self.commit_sha1 = hash;
+        fs::write(&self.repo_path.join(&self.branch), &self.commit_sha1);
+        self.clear_index_file()?;
         Ok(())
     }
 
@@ -156,26 +214,43 @@ impl GitRepository {
     fn add_file(&mut self, path: &PathBuf) -> Result<(), GitError> {
         if path.exists() {
             let hash = utils::crypto_file(path)?;
-            let relative_path = path.strip_prefix(&self.cwd).map_err(|_| {
-                GitError::StagedAddError(format!("file {} is outside repository", path.display()))
-            })?;
+            let relative_path = path.strip_prefix(&self.cwd).map_err(|_|
+                GitError::StagedAddError(format!("file {} is outside repository", path.display())))?;
             // TODO: replace only when file is modified
             // move file to staging area
             utils::copy_to(&path, &self.blobs_path.join(&hash))?;
             self.staging_area
                 .add(relative_path.display().to_string(), hash);
-            self.persist_staging_area()?;
+
             Ok(())
         } else {
-            Err(GitError::FileNotExistError(path.display().to_string()))
+            Err(GitError::FileNotExistError)
         }
     }
 
-    /// persist staging area info into index file
-    fn persist_staging_area(&self) -> Result<(), GitError> {
-        Self::persist(&self.staging_area, &self.index_file)
+    /// remove file
+    /// 1. Unstage the file if it is currently staged for addition.
+    /// 2. If the file is tracked in the current commit, stage it for removal and remove the file from the working directory if the user has not already done so (do not remove it unless it is tracked in the current commit).
+    fn remove_file(&mut self, path: &PathBuf) -> Result<(), GitError> {
+        if path.exists() {
+            let hash = utils::crypto_file(path)?;
+            let relative_path = path.strip_prefix(&self.cwd).map_err(|_| {
+                GitError::StagedRemoveError(format!("file {} is outside repository", path.display()))
+            })?;
+            let path_name = relative_path.display().to_string();
+            if self.staging_area.staged.contains_key(&path_name) {
+                self.staging_area.staged.remove(&path_name);
+                Ok(())
+            } else if self.commit.blobs.contains_key(&path_name) {
+                self.staging_area.deleted.insert(path_name, "".to_string());
+                Ok(())
+            } else {
+                Err(GitError::StagedRemoveNoReasonError)
+            }
+        } else {
+            Err(GitError::StagedRemoveNoReasonError)
+        }
     }
-
     /// persistence staged area
     /// 1. serialize StageArea into json string
     /// 2. write/update serialized string into staging area file
@@ -190,7 +265,8 @@ impl GitRepository {
     }
     fn unpersist_commit(path: &PathBuf) -> Result<Commit, GitError> {
         if !path.exists() || !path.is_file() {
-            Err(GitError::FileNotExistError(path.display().to_string()))
+            println!("{}", path.display());
+            Err(GitError::FileNotExistError)
         } else {
             let mut file =
                 fs::File::open(path).map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
@@ -206,7 +282,7 @@ impl GitRepository {
     }
     fn unpersist_staging_area(path: &PathBuf) -> Result<StagingArea, GitError> {
         if !path.exists() || !path.is_file() {
-            Err(GitError::FileNotExistError(path.display().to_string()))
+            Err(GitError::FileNotExistError)
         } else {
             let mut file =
                 fs::File::open(path).map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
@@ -214,10 +290,13 @@ impl GitRepository {
             let mut content = String::new();
             file.read_to_string(&mut content)
                 .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
-
-            let staging_area =
-                serde_json::from_str(content.as_str()).expect("JSON was not well-formatted");
-            Ok(staging_area)
+            if content.is_empty() {
+                Ok(StagingArea::new())
+            } else {
+                let staging_area =
+                    serde_json::from_str(content.as_str()).expect("JSON was not well-formatted");
+                Ok(staging_area)
+            }
         }
     }
 }
@@ -287,20 +366,19 @@ mod tests {
         assert!(git.index_file.is_file());
 
         // Act git add f1
-        assert!(git.add_file(&paths[0]).is_ok());
         assert_eq!(git.branch, "main");
         assert_eq!(git.commit, Commit::new());
-
+        assert!(git.add(&vec!["smoke_ut/f1".to_string()]).is_ok());
         // Verify staging add file
         let mut file = fs::File::open(&git.index_file).unwrap();
         let mut content = String::new();
         assert!(file.read_to_string(&mut content).is_ok());
         assert_eq!(
-            r#"{"staged":{"smoke_ut/f1":"436e9d92cf041816563850964d9256d7b0484c46"},"deleted":[]}"#,
+            r#"{"staged":{"smoke_ut/f1":"436e9d92cf041816563850964d9256d7b0484c46"},"deleted":{}}"#,
             content.as_str()
         );
 
-        let res = git.add(&vec!["smoke_ut/f2".to_string()]);
+        let res = git.add(&vec!["smoke_ut/f2".to_string(), "smoke_ut/f3".to_string()]);
         // Act git add f2
         assert!(res.is_ok(), "{:?}", res);
         // Verify staging add file
@@ -308,9 +386,59 @@ mod tests {
         let mut content = String::new();
         assert!(file.read_to_string(&mut content).is_ok());
         assert_eq!(
-            r#"{"staged":{"smoke_ut/f1":"436e9d92cf041816563850964d9256d7b0484c46","smoke_ut/f2":"edf058309c9c35b69458bc469344d7e7f9906ac2"},"deleted":[]}"#,
+            r#"{"staged":{"smoke_ut/f1":"436e9d92cf041816563850964d9256d7b0484c46","smoke_ut/f2":"edf058309c9c35b69458bc469344d7e7f9906ac2","smoke_ut/f3":"de9c94ac88cae8cd61843b1ccd1339ad507e7f49"},"deleted":{}}"#,
             content.as_str()
         );
+
+
+        // Act git rm f2
+        let res = git.remove(&vec!["smoke_ut/f2".to_string()]);
+        assert!(res.is_ok(), "{:?}", res);
+        // Verify staging add file
+        let mut file = fs::File::open(&git.index_file).unwrap();
+        let mut content = String::new();
+        assert!(file.read_to_string(&mut content).is_ok());
+        assert_eq!(
+            r#"{"staged":{"smoke_ut/f1":"436e9d92cf041816563850964d9256d7b0484c46","smoke_ut/f3":"de9c94ac88cae8cd61843b1ccd1339ad507e7f49"},"deleted":{}}"#,
+            content.as_str()
+        );
+
+        // Act git commit "commit test"
+        let res = git.commit("commit test");
+        assert!(res.is_ok(), "{:?}", res);
+        // Verify staging add file
+        let res = git.refresh();
+        assert!(res.is_ok(), "{:?}", res);
+        let commit = &git.commit;
+        assert_eq!(commit.blobs, BTreeMap::from([
+                ("smoke_ut/f1".to_string(), "436e9d92cf041816563850964d9256d7b0484c46".to_string()),
+                ("smoke_ut/f3".to_string(), "de9c94ac88cae8cd61843b1ccd1339ad507e7f49".to_string()),
+            ]));
+
+        // Act git rm f1
+        let res = git.remove(&vec!["smoke_ut/f1".to_string()]);
+        assert!(res.is_ok(), "{:?}", res);
+        // Verify staging add file
+        let mut file = fs::File::open(&git.index_file).unwrap();
+        let mut content = String::new();
+        assert!(file.read_to_string(&mut content).is_ok());
+        assert_eq!(
+            r#"{"staged":{},"deleted":{"smoke_ut/f1":""}}"#,
+            content.as_str()
+        );
+
+        // Act git commit "commit test"
+        let prev_commit = git.commit_sha1.clone();
+        let res = git.commit("commit 2nd");
+        assert!(res.is_ok(), "{:?}", res);
+        // Verify staging add file
+        let res = git.refresh();
+        assert!(res.is_ok(), "{:?}", res);
+        let commit = &git.commit;
+        assert_eq!(commit.blobs, BTreeMap::from([
+            ("smoke_ut/f3".to_string(), "de9c94ac88cae8cd61843b1ccd1339ad507e7f49".to_string()),
+        ]));
+        assert_eq!(prev_commit, commit.parent);
         clean_repo();
         assert!(fs::remove_dir_all(smoke_ut_dir).is_ok());
     }
@@ -322,12 +450,12 @@ mod tests {
                 ("file1".to_string(), "hash1".to_string()),
                 ("file2".to_string(), "hash2".to_string()),
             ]),
-            deleted: Vec::new(),
+            deleted: BTreeMap::new(),
         };
 
         let serialized = serde_json::to_string(&area).unwrap();
         assert_eq!(
-            r#"{"staged":{"file1":"hash1","file2":"hash2"},"deleted":[]}"#,
+            r#"{"staged":{"file1":"hash1","file2":"hash2"},"deleted":{}}"#,
             serialized
         );
 
@@ -342,7 +470,7 @@ mod tests {
         let area = StagingArea::new();
 
         let serialized = serde_json::to_string(&area).unwrap();
-        assert_eq!(r#"{"staged":{},"deleted":[]}"#, serialized);
+        assert_eq!(r#"{"staged":{},"deleted":{}}"#, serialized);
 
         let deserialized: StagingArea = serde_json::from_str(&serialized).unwrap();
         assert_eq!(0, deserialized.staged.len());
@@ -360,7 +488,7 @@ mod tests {
                 ("file1".to_string(), "hash1".to_string()),
                 ("file2".to_string(), "hash2".to_string()),
             ]),
-            deleted: Vec::new(),
+            deleted: BTreeMap::new(),
         };
         let res = GitRepository::persist(&area, &tmp_file);
         assert!(res.is_ok(), "{:?}", res);
@@ -370,7 +498,7 @@ mod tests {
         assert!(file.read_to_string(&mut content).is_ok());
 
         assert_eq!(
-            r#"{"staged":{"file1":"hash1","file2":"hash2"},"deleted":[]}"#,
+            r#"{"staged":{"file1":"hash1","file2":"hash2"},"deleted":{}}"#,
             content.as_str()
         );
         assert!(fs::remove_file(&tmp_file).is_ok());
@@ -393,6 +521,7 @@ mod tests {
                 ("file1".to_string(), "hash1".to_string()),
                 ("file2".to_string(), "hash2".to_string()),
             ]),
+            parent: "mock_parent".to_string(),
         };
         let res = GitRepository::persist(&area, &tmp_file);
         assert!(res.is_ok(), "{:?}", res);
@@ -402,7 +531,7 @@ mod tests {
         assert!(file.read_to_string(&mut content).is_ok());
 
         assert_eq!(
-            r#"{"meta":{"message":"persist commit ut message","date_time":1234567890},"blobs":{"file1":"hash1","file2":"hash2"}}"#,
+            r#"{"meta":{"message":"persist commit ut message","date_time":1234567890},"blobs":{"file1":"hash1","file2":"hash2"},"parent":"mock_parent"}"#,
             content.as_str()
         );
         assert!(fs::remove_file(&tmp_file).is_ok());
@@ -419,7 +548,7 @@ mod tests {
         let tmp_file = tmp_dir.join("area");
         let mut file = fs::File::create(&tmp_file).unwrap();
         assert!(file
-            .write_all(r#"{"staged":{"file1":"hash1","file2":"hash2"},"deleted":[]}"#.as_bytes())
+            .write_all(r#"{"staged":{"file1":"hash1","file2":"hash2"},"deleted":{}}"#.as_bytes())
             .is_ok());
 
         let res = GitRepository::unpersist_staging_area(&tmp_file);
@@ -430,7 +559,7 @@ mod tests {
                     ("file1".to_string(), "hash1".to_string()),
                     ("file2".to_string(), "hash2".to_string()),
                 ]),
-                deleted: Vec::new(),
+                deleted: BTreeMap::new(),
             },
             res.unwrap()
         );
@@ -445,7 +574,7 @@ mod tests {
 
         let tmp_file = tmp_dir.join("commit");
         let mut file = fs::File::create(&tmp_file).unwrap();
-        assert!(file.write_all(r#"{"meta":{"message":"persist commit ut message","date_time":1234567890},"blobs":{"file1":"hash1","file2":"hash2"}}"#.as_bytes()).is_ok());
+        assert!(file.write_all(r#"{"meta":{"message":"persist commit ut message","date_time":1234567890},"blobs":{"file1":"hash1","file2":"hash2"},"parent":"mock_parent"}"#.as_bytes()).is_ok());
 
         let res = GitRepository::unpersist_commit(&tmp_file);
         assert!(res.is_ok());
@@ -459,10 +588,50 @@ mod tests {
                     ("file1".to_string(), "hash1".to_string()),
                     ("file2".to_string(), "hash2".to_string()),
                 ]),
+                parent: "mock_parent".to_string(),
             },
             res.unwrap()
         );
         assert!(fs::remove_file(&tmp_file).is_ok());
         assert!(fs::remove_dir(&tmp_dir).is_ok());
+    }
+
+    #[test]
+    fn generate_commit_blobs_ut1() {
+        let old = BTreeMap::new();
+        let staging_area = StagingArea {
+            staged: BTreeMap::from([
+                ("file1".to_string(), "hash1".to_string()),
+                ("file2".to_string(), "hash2".to_string()),
+            ]),
+            deleted: BTreeMap::new(),
+        };
+        let new_blobs = GitRepository::generate_commit_blobs(&old, &staging_area).unwrap();
+        assert_eq!(BTreeMap::from([
+            ("file1".to_string(), "hash1".to_string()),
+            ("file2".to_string(), "hash2".to_string()),
+        ]), new_blobs);
+    }
+
+    #[test]
+    fn generate_commit_blobs_ut2() {
+        let old = BTreeMap::from([
+            ("file1".to_string(), "hash1".to_string()),
+            ("file2".to_string(), "hash2".to_string()),
+        ]);
+        let staging_area = StagingArea {
+            staged: BTreeMap::from([
+                ("file3".to_string(), "hash3".to_string()),
+                ("file4".to_string(), "hash4".to_string()),
+            ]),
+            deleted: BTreeMap::new(),
+        };
+        let new_blobs = GitRepository::generate_commit_blobs(&old, &staging_area).unwrap();
+        assert_eq!(BTreeMap::from([
+            ("file1".to_string(), "hash1".to_string()),
+            ("file2".to_string(), "hash2".to_string()),
+            ("file3".to_string(), "hash3".to_string()),
+            ("file4".to_string(), "hash4".to_string()),
+        ]), new_blobs);
     }
 }

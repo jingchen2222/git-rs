@@ -7,8 +7,14 @@ pub enum GitError {
     InitHeadError(String),
     #[error("add : {0}")]
     StagedAddError(String),
-    #[error("file not exist: {0}")]
-    FileNotExistError(String),
+    #[error("rm : {0}")]
+    StagedRemoveError(String),
+    #[error("No reason to remove the file")]
+    StagedRemoveNoReasonError,
+    #[error("commit : {0}")]
+    CommitError(String),
+    #[error("File does not exist.")]
+    FileNotExistError,
     #[error("file op fatal: {0}")]
     FileOpError(String),
     #[error("serialized/deserialized fatal: {0}")]
