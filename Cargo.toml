@@ -13,3 +13,6 @@ serde = { version = "1.0.144", features = ["derive"] }
 serde_json = { version = "1.0.64" }
 thiserror = "1.0.39"
 chrono = {version = "0.4.24"}
+log = { version = "0.4" }
+[dev-dependencies]
+env_logger = "*"

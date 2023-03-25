@@ -1,11 +1,12 @@
 use crate::error::GitError;
 use crate::utils;
+use chrono::Utc;
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::{env, fs};
-use chrono::Utc;
 
 const GIT_DIR: &str = ".git-rs";
 const BLOBS_DIR: &str = "blobs";
@@ -135,41 +136,81 @@ impl GitRepository {
         Ok(())
     }
 
-    pub fn refresh(&mut self) -> Result<(), GitError> {
+    /// load branch name from HEAD
+    fn load_branch(&mut self) -> Result<(), GitError> {
         self.branch = fs::read_to_string(&self.head_file)
             .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
-        println!("branch: {}", self.branch);
-        let commit_sha = fs::read_to_string(&self.repo_path.join(&self.branch))
+        info!("branch: {}", self.branch);
+        Ok(())
+    }
+
+    /// load current commit
+    fn load_current_commit(&mut self) -> Result<(), GitError> {
+        self.commit_sha1 = fs::read_to_string(&self.repo_path.join(&self.branch))
             .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
-        println!("commit_sha: {}", commit_sha);
-        if !commit_sha.is_empty() {
-            self.commit = Self::unpersist_commit(&self.commits_path.join(&commit_sha))?;
-            self.commit_sha1 = commit_sha;
+        info!("current commit: {}", &self.commit_sha1);
+        if self.commit_sha1.is_empty() {
+            self.commit = Commit::new();
+        } else {
+            self.commit = Self::unpersist_commit(&self.commits_path.join(&self.commit_sha1))?;
+            info!("{:?}", self.commit);
         }
+        Ok(())
+    }
+
+    /// load staging area from INDEX
+    fn load_staging_area(&mut self) -> Result<(), GitError> {
         self.staging_area = Self::unpersist_staging_area(&self.index_file)?;
         Ok(())
     }
+
+    /// load basic information from file.
+    /// HEAD, INDEX, commit
+    fn load_basic_info(&mut self) -> Result<(), GitError> {
+        info!("load basic info");
+        self.load_branch()?;
+        self.load_current_commit()?;
+        self.load_staging_area()?;
+        info!("load basic info done!");
+        Ok(())
+    }
+
+    /// persiste basic git infomation into file
+    /// HEAD, INDEX, commit
+    fn persist_basic_info(&mut self) -> Result<(), GitError> {
+        info!("persist_basic_info");
+        Self::persist(&self.staging_area, &self.index_file)?;
+        if !&self.commit_sha1.is_empty() {
+            Self::persist(&self.commit, &self.commits_path.join(&self.commit_sha1))?;
+            fs::write(&self.repo_path.join(&self.branch), &self.commit_sha1)
+                .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+        }
+        info!("persist_basic_info done!");
+        Ok(())
+    }
     pub fn add(&mut self, paths: &Vec<String>) -> Result<(), GitError> {
-        self.refresh()?;
+        self.load_basic_info()?;
         for path in paths.iter() {
             self.add_file(&self.cwd.join(&path))?
         }
-        Self::persist(&self.staging_area, &self.index_file)?;
+        self.persist_basic_info()?;
         Ok(())
     }
 
     pub fn remove(&mut self, paths: &Vec<String>) -> Result<(), GitError> {
-        self.refresh()?;
+        self.load_basic_info()?;
         for path in paths.iter() {
             self.remove_file(&self.cwd.join(&path))?
         }
-        Self::persist(&self.staging_area, &self.index_file)?;
+        self.persist_basic_info()?;
         Ok(())
     }
 
     /// create new commit blobs with parent commit's blobs and staging area info
-    fn generate_commit_blobs(old_blobs: &BTreeMap<String, String>, adding_staged: &StagingArea)
-                             -> Result<BTreeMap<String, String>, GitError> {
+    fn generate_commit_blobs(
+        old_blobs: &BTreeMap<String, String>,
+        adding_staged: &StagingArea,
+    ) -> Result<BTreeMap<String, String>, GitError> {
         let mut new_blobs = old_blobs.clone();
         for (k, v) in adding_staged.staged.iter() {
             new_blobs.insert(k.to_owned(), v.to_owned());
@@ -178,21 +219,23 @@ impl GitRepository {
         for (k, _) in adding_staged.deleted.iter() {
             new_blobs.remove(k);
         }
+        info!("new_blobs: {:?}", &new_blobs);
         Ok(new_blobs)
     }
-    fn clear_index_file(&mut self) -> Result<(), GitError> {
-        fs::write(&self.index_file, "");
-        Ok(())
-    }
+
+    /// commit
     pub fn commit(&mut self, msg: &str) -> Result<(), GitError> {
-        println!("commit start...");
-        for (removed_path, v) in self.staging_area.deleted.iter() {
-            fs::remove_file(&self.cwd.join(removed_path))
-                .map_err(|e| GitError::CommitError("fail to remove file from current workspace".to_string()))?;
+        self.load_basic_info()?;
+        info!("commit start...");
+        for (removed_path, _) in self.staging_area.deleted.iter() {
+            fs::remove_file(&self.cwd.join(removed_path)).map_err(|_| {
+                GitError::CommitError("fail to remove file from current workspace".to_string())
+            })?;
         }
         let blobs = Self::generate_commit_blobs(&self.commit.blobs, &self.staging_area)
             .map_err(|e| GitError::CommitError(format!("{:?}", e)))?;
-        let commit = Commit {
+        self.staging_area = StagingArea::new();
+        self.commit = Commit {
             meta: CommitMeta {
                 message: msg.to_string(),
                 date_time: Utc::now().timestamp(),
@@ -200,12 +243,9 @@ impl GitRepository {
             blobs,
             parent: self.commit_sha1.clone(),
         };
-        Self::persist(&commit, &self.commits_path.join("TEMP"))?;
-        let hash = utils::crypto_file(&self.commits_path.join("TEMP"))?;
-        utils::copy_to(&self.commits_path.join("TEMP"), &self.commits_path.join(&hash))?;
-        self.commit_sha1 = hash;
-        fs::write(&self.repo_path.join(&self.branch), &self.commit_sha1);
-        self.clear_index_file()?;
+        let content = Self::persist_string(&self.commit)?;
+        self.commit_sha1 = utils::crypto_string(content.as_str());
+        self.persist_basic_info()?;
         Ok(())
     }
 
@@ -214,8 +254,9 @@ impl GitRepository {
     fn add_file(&mut self, path: &PathBuf) -> Result<(), GitError> {
         if path.exists() {
             let hash = utils::crypto_file(path)?;
-            let relative_path = path.strip_prefix(&self.cwd).map_err(|_|
-                GitError::StagedAddError(format!("file {} is outside repository", path.display())))?;
+            let relative_path = path.strip_prefix(&self.cwd).map_err(|_| {
+                GitError::StagedAddError(format!("file {} is outside repository", path.display()))
+            })?;
             // TODO: replace only when file is modified
             // move file to staging area
             utils::copy_to(&path, &self.blobs_path.join(&hash))?;
@@ -224,7 +265,7 @@ impl GitRepository {
 
             Ok(())
         } else {
-            Err(GitError::FileNotExistError)
+            Err(GitError::FileNotExistError(path.display().to_string()))
         }
     }
 
@@ -233,9 +274,11 @@ impl GitRepository {
     /// 2. If the file is tracked in the current commit, stage it for removal and remove the file from the working directory if the user has not already done so (do not remove it unless it is tracked in the current commit).
     fn remove_file(&mut self, path: &PathBuf) -> Result<(), GitError> {
         if path.exists() {
-            let hash = utils::crypto_file(path)?;
             let relative_path = path.strip_prefix(&self.cwd).map_err(|_| {
-                GitError::StagedRemoveError(format!("file {} is outside repository", path.display()))
+                GitError::StagedRemoveError(format!(
+                    "file {} is outside repository",
+                    path.display()
+                ))
             })?;
             let path_name = relative_path.display().to_string();
             if self.staging_area.staged.contains_key(&path_name) {
@@ -263,10 +306,19 @@ impl GitRepository {
             .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
         Ok(())
     }
+    /// persistence staged area
+    /// 1. serialize StageArea into json string
+    fn persist_string<T: Serialize>(value: &T) -> Result<String, GitError> {
+        // let mut content = String::new();
+        let content = serde_json::to_string(&value)
+            .map_err(|e| GitError::SerdeOpError(format!("{:?}", e)))?;
+        Ok(content)
+    }
     fn unpersist_commit(path: &PathBuf) -> Result<Commit, GitError> {
+        info!("unpersist_commit {}", path.display());
         if !path.exists() || !path.is_file() {
-            println!("{}", path.display());
-            Err(GitError::FileNotExistError)
+            info!("{}", path.display());
+            Err(GitError::FileNotExistError(path.display().to_string()))
         } else {
             let mut file =
                 fs::File::open(path).map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
@@ -274,7 +326,7 @@ impl GitRepository {
             let mut content = String::new();
             file.read_to_string(&mut content)
                 .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
-
+            info!("content {}", content);
             let commit =
                 serde_json::from_str(content.as_str()).expect("JSON was not well-formatted");
             Ok(commit)
@@ -282,7 +334,7 @@ impl GitRepository {
     }
     fn unpersist_staging_area(path: &PathBuf) -> Result<StagingArea, GitError> {
         if !path.exists() || !path.is_file() {
-            Err(GitError::FileNotExistError)
+            Err(GitError::FileNotExistError(path.display().to_string()))
         } else {
             let mut file =
                 fs::File::open(path).map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
@@ -312,9 +364,20 @@ mod tests {
             assert!(fs::remove_dir_all(path).is_ok());
         }
     }
+    fn init() {
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
+    #[test]
+    fn it_works() {
+        init();
 
+        info!("This record will be captured by `cargo test`");
+
+        assert_eq!(2, 1 + 1);
+    }
     #[test]
     fn init_repo_dir_ut() {
+        init();
         let tmp_path = &env::current_dir().unwrap().join("init_repo_dir_ut");
         assert!(GitRepository::init_repo_dir(tmp_path).is_ok());
         assert!(tmp_path.exists());
@@ -324,6 +387,8 @@ mod tests {
 
     #[test]
     fn smoke_ut() {
+        init();
+        info!("This record will be captured by `cargo test`");
         let smoke_ut_dir = &env::current_dir().unwrap().join("smoke_ut");
 
         if smoke_ut_dir.exists() {
@@ -368,7 +433,8 @@ mod tests {
         // Act git add f1
         assert_eq!(git.branch, "main");
         assert_eq!(git.commit, Commit::new());
-        assert!(git.add(&vec!["smoke_ut/f1".to_string()]).is_ok());
+        let res = git.add(&vec!["smoke_ut/f1".to_string()]);
+        assert!(res.is_ok(), "{:?}", res.err().unwrap());
         // Verify staging add file
         let mut file = fs::File::open(&git.index_file).unwrap();
         let mut content = String::new();
@@ -390,7 +456,6 @@ mod tests {
             content.as_str()
         );
 
-
         // Act git rm f2
         let res = git.remove(&vec!["smoke_ut/f2".to_string()]);
         assert!(res.is_ok(), "{:?}", res);
@@ -407,13 +472,21 @@ mod tests {
         let res = git.commit("commit test");
         assert!(res.is_ok(), "{:?}", res);
         // Verify staging add file
-        let res = git.refresh();
-        assert!(res.is_ok(), "{:?}", res);
-        let commit = &git.commit;
-        assert_eq!(commit.blobs, BTreeMap::from([
-                ("smoke_ut/f1".to_string(), "436e9d92cf041816563850964d9256d7b0484c46".to_string()),
-                ("smoke_ut/f3".to_string(), "de9c94ac88cae8cd61843b1ccd1339ad507e7f49".to_string()),
-            ]));
+        // let res = git.load_basic_info();
+        // assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(
+            git.commit.blobs,
+            BTreeMap::from([
+                (
+                    "smoke_ut/f1".to_string(),
+                    "436e9d92cf041816563850964d9256d7b0484c46".to_string()
+                ),
+                (
+                    "smoke_ut/f3".to_string(),
+                    "de9c94ac88cae8cd61843b1ccd1339ad507e7f49".to_string()
+                ),
+            ])
+        );
 
         // Act git rm f1
         let res = git.remove(&vec!["smoke_ut/f1".to_string()]);
@@ -432,12 +505,17 @@ mod tests {
         let res = git.commit("commit 2nd");
         assert!(res.is_ok(), "{:?}", res);
         // Verify staging add file
-        let res = git.refresh();
+        let mut git = GitRepository::new();
+        let res = git.load_basic_info();
         assert!(res.is_ok(), "{:?}", res);
         let commit = &git.commit;
-        assert_eq!(commit.blobs, BTreeMap::from([
-            ("smoke_ut/f3".to_string(), "de9c94ac88cae8cd61843b1ccd1339ad507e7f49".to_string()),
-        ]));
+        assert_eq!(
+            commit.blobs,
+            BTreeMap::from([(
+                "smoke_ut/f3".to_string(),
+                "de9c94ac88cae8cd61843b1ccd1339ad507e7f49".to_string()
+            ),])
+        );
         assert_eq!(prev_commit, commit.parent);
         clean_repo();
         assert!(fs::remove_dir_all(smoke_ut_dir).is_ok());
@@ -607,10 +685,13 @@ mod tests {
             deleted: BTreeMap::new(),
         };
         let new_blobs = GitRepository::generate_commit_blobs(&old, &staging_area).unwrap();
-        assert_eq!(BTreeMap::from([
-            ("file1".to_string(), "hash1".to_string()),
-            ("file2".to_string(), "hash2".to_string()),
-        ]), new_blobs);
+        assert_eq!(
+            BTreeMap::from([
+                ("file1".to_string(), "hash1".to_string()),
+                ("file2".to_string(), "hash2".to_string()),
+            ]),
+            new_blobs
+        );
     }
 
     #[test]
@@ -627,11 +708,14 @@ mod tests {
             deleted: BTreeMap::new(),
         };
         let new_blobs = GitRepository::generate_commit_blobs(&old, &staging_area).unwrap();
-        assert_eq!(BTreeMap::from([
-            ("file1".to_string(), "hash1".to_string()),
-            ("file2".to_string(), "hash2".to_string()),
-            ("file3".to_string(), "hash3".to_string()),
-            ("file4".to_string(), "hash4".to_string()),
-        ]), new_blobs);
+        assert_eq!(
+            BTreeMap::from([
+                ("file1".to_string(), "hash1".to_string()),
+                ("file2".to_string(), "hash2".to_string()),
+                ("file3".to_string(), "hash3".to_string()),
+                ("file4".to_string(), "hash4".to_string()),
+            ]),
+            new_blobs
+        );
     }
 }

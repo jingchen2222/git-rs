@@ -76,19 +76,17 @@ impl GitCommand {
                 }
             },
             GitCommand::Rm { paths } => match repo.remove(&paths) {
-                Ok(_) => {
-
-                }
-                Err(err) => {
-                    println!("{:?}", err);
-                }
-            }
-            GitCommand::Commit {message} => match repo.commit(message.as_str()) {
                 Ok(_) => {}
                 Err(err) => {
                     println!("{:?}", err);
                 }
-            }
+            },
+            GitCommand::Commit { message } => match repo.commit(message.as_str()) {
+                Ok(_) => {}
+                Err(err) => {
+                    println!("{:?}", err);
+                }
+            },
         }
     }
 }

@@ -1,6 +1,7 @@
 use crate::error::GitError;
 use crypto;
 use crypto::digest::Digest;
+use log::info;
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
@@ -18,19 +19,25 @@ pub fn crypto_file(path: &PathBuf) -> Result<String, GitError> {
         hasher.input_str(s.as_str());
         Ok(hasher.result_str())
     } else {
-        Err(GitError::FileNotExistError)
+        Err(GitError::FileNotExistError(path.display().to_string()))
     }
 }
 
+/// crypto string to sha1
+pub fn crypto_string(content: &str) -> String {
+    let mut hasher = crypto::sha1::Sha1::new();
+    hasher.input_str(content);
+    hasher.result_str()
+}
 /// copy file to repo
 /// e.g src/d1/f1 to .git-repo-dir/src/d1/f1
 pub fn copy_to(path: &PathBuf, dist: &PathBuf) -> Result<(), GitError> {
-    if path.exists() {
-        println!("copy {} to {}", path.display(), dist.display());
+    if path.exists() && path.is_file() {
+        info!("copy {} to {}", path.display(), dist.display());
         fs::copy(path, dist).map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
         Ok(())
     } else {
-        Err(GitError::FileNotExistError)
+        Err(GitError::FileNotExistError(path.display().to_string()))
     }
 }
 

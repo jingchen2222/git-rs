@@ -13,8 +13,8 @@ pub enum GitError {
     StagedRemoveNoReasonError,
     #[error("commit : {0}")]
     CommitError(String),
-    #[error("File does not exist.")]
-    FileNotExistError,
+    #[error("File {0} does not exist.")]
+    FileNotExistError(String),
     #[error("file op fatal: {0}")]
     FileOpError(String),
     #[error("serialized/deserialized fatal: {0}")]
