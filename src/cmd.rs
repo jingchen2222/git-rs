@@ -52,6 +52,32 @@ pub enum GitCommand {
         #[arg(required = true)]
         message: String,
     },
+
+    /// Usage: java gitlet.Main status
+    /// Description: Displays what branches currently exist, and marks the current branch with a *.
+    /// Also displays what files have been staged for addition or removal. An example of the exact
+    /// format it should follow is as follows.
+    /// Example:
+    /// === Branches ===
+    /// *master
+    /// other-branch
+    ///
+    /// === Staged Files ===
+    /// wug.txt
+    /// wug2.txt
+    ///
+    /// === Removed Files ===
+    /// goodbye.txt
+    ///
+    /// === Modifications Not Staged For Commit ===
+    /// junk.txt (deleted)
+    /// wug3.txt (modified)
+    ///
+    /// === Untracked Files ===
+    /// random.stuff
+    ///
+    #[clap(name = "status")]
+    Status {},
 }
 
 impl GitCommand {
@@ -83,6 +109,14 @@ impl GitCommand {
             },
             GitCommand::Commit { message } => match repo.commit(message.as_str()) {
                 Ok(_) => {}
+                Err(err) => {
+                    println!("{:?}", err);
+                }
+            },
+            GitCommand::Status {} => match repo.status() {
+                Ok(msg) => {
+                    println!("{}", msg);
+                }
                 Err(err) => {
                     println!("{:?}", err);
                 }

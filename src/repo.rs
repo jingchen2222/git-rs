@@ -5,6 +5,7 @@ use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::ops::Add;
 use std::path::PathBuf;
 use std::{env, fs};
 
@@ -249,6 +250,78 @@ impl GitRepository {
         Ok(())
     }
 
+    /// Displays Untracked Files
+    fn untrack_status(&self) -> Result<String, GitError> {
+        Ok("=== Untracked Files ===".to_lowercase())
+    }
+    /// Displays what files have been modified by not Staged For Commit
+    fn modified_not_staged(&self) -> Result<String, GitError> {
+        Ok("=== Modifications Not Staged For Commit ===".to_lowercase())
+    }
+    /// Displays what files have been staged for addition
+    fn staged_status(&self) -> Result<String, GitError> {
+        let mut msg: Vec<String> = vec![];
+        msg.push("=== Staged Files ===".to_string());
+        for (k, _) in self.staging_area.staged.iter() {
+            msg.push(k.clone());
+        }
+        Ok(msg.join("\n"))
+    }
+    /// Displays what files have been staged for removal.
+    fn removal_status(&self) -> Result<String, GitError> {
+        let mut msg: Vec<String> = vec![];
+        msg.push("=== Removed Files ===".to_string());
+        for (k, _) in self.staging_area.deleted.iter() {
+            msg.push(k.clone());
+        }
+        Ok(msg.join("\n"))
+    }
+
+    /// Displays what branches currently exist, and marks the current branch with a *.
+    fn branch_status(&self) -> Result<String, GitError> {
+        let mut msg: Vec<String> = vec![];
+
+        msg.push("=== Branches ===".to_string());
+
+        let current_branch_path = self.repo_path.join(&self.branch);
+        let current_branch_name = current_branch_path
+            .strip_prefix(&self.heads_path)
+            .map_err(|_| GitError::BranchError("invalid branch name".to_string()))?;
+        msg.push(format!("*{}", current_branch_name.display()));
+        for entry in
+            fs::read_dir(&self.heads_path).map_err(|e| GitError::BranchError(format!("{:?}", e)))?
+        {
+            let path = entry
+                .map_err(|_| GitError::BranchError("invalid branch name".to_lowercase()))?
+                .path();
+            let branch_name = path
+                .strip_prefix(&self.heads_path)
+                .map_err(|_| GitError::BranchError("invalid branch name".to_string()))?;
+
+            info!("{:?}", branch_name.display());
+            if current_branch_name != branch_name {
+                msg.push(branch_name.display().to_string());
+            }
+        }
+        Ok(msg.join("\n"))
+    }
+
+    /// Displays what branches currently exist, and marks the current branch with a *.
+    /// Also displays what files have been staged for addition or removal. An example of the exact
+    /// format it should follow is as follows.
+    pub fn status(&mut self) -> Result<String, GitError> {
+        info!("status >> ");
+        self.load_basic_info();
+        let mut msg: Vec<String> = vec![];
+        msg.push(self.branch_status()?);
+        msg.push(self.staged_status()?);
+        msg.push(self.removal_status()?);
+        msg.push(self.modified_not_staged()?);
+        msg.push(self.untrack_status()?);
+        info!("status << ");
+        Ok(msg.join("\n\n"))
+    }
+
     /// add file under path into staging area
     /// 1. check if added file has been modified
     fn add_file(&mut self, path: &PathBuf) -> Result<(), GitError> {
@@ -467,7 +540,16 @@ mod tests {
             r#"{"staged":{"smoke_ut/f1":"436e9d92cf041816563850964d9256d7b0484c46","smoke_ut/f3":"de9c94ac88cae8cd61843b1ccd1339ad507e7f49"},"deleted":{}}"#,
             content.as_str()
         );
-
+        let mut git = GitRepository::new();
+        git.load_basic_info();
+        let res = git.staged_status();
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(
+            r#"=== Staged Files ===
+smoke_ut/f1
+smoke_ut/f3"#,
+            res.unwrap()
+        );
         // Act git commit "commit test"
         let res = git.commit("commit test");
         assert!(res.is_ok(), "{:?}", res);
@@ -500,6 +582,16 @@ mod tests {
             content.as_str()
         );
 
+        let mut git = GitRepository::new();
+        git.load_basic_info();
+        let res = git.removal_status();
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(
+            r#"=== Removed Files ===
+smoke_ut/f1"#,
+            res.unwrap()
+        );
+
         // Act git commit "commit test"
         let prev_commit = git.commit_sha1.clone();
         let res = git.commit("commit 2nd");
@@ -517,6 +609,17 @@ mod tests {
             ),])
         );
         assert_eq!(prev_commit, commit.parent);
+
+        let mut git = GitRepository::new();
+        git.load_basic_info();
+        let res = git.branch_status();
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(
+            r#"=== Branches ===
+*main"#,
+            res.unwrap()
+        );
+
         clean_repo();
         assert!(fs::remove_dir_all(smoke_ut_dir).is_ok());
     }
