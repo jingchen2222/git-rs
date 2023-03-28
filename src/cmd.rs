@@ -3,8 +3,13 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[clap(name = "git-rs")]
 pub enum GitCommand {
+    /// init git repository
+    /// Description: Create an empty Git repository or reinitialize an existing one.
     #[clap(name = "init")]
     Init {},
+
+    /// add [file name]
+    /// Description: Stage the file for addition to the next commit.
     #[command(arg_required_else_help = true)]
     Add {
         /// Stuff to add

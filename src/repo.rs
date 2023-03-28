@@ -5,24 +5,34 @@ use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::ops::Add;
 use std::path::PathBuf;
 use std::{env, fs};
 
+/// git repository directory
 const GIT_DIR: &str = ".git-rs";
+/// git blobs directory
 const BLOBS_DIR: &str = "blobs";
+/// git commits directory
 const COMMITS_DIR: &str = "commits";
+/// git index file
 const INDEX_FILE: &str = "index";
+/// git HEAD file
 const HEAD_FILE: &str = "HEAD";
+/// git refs/heads directory
 const HEADS_DIR: &str = "refs/heads";
+/// git main branch name
 const MAIN_BRANCH: &str = "main";
 
+/// Staging area for files to be committed
+/// staged: staged file path --> file sha1 pair
+/// deleted: deleted file path --> file sha1 pair
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct StagingArea {
     staged: BTreeMap<String, String>,
     deleted: BTreeMap<String, String>,
 }
 
+/// impl StagingArea
 impl StagingArea {
     pub fn new() -> Self {
         Self {
@@ -311,7 +321,7 @@ impl GitRepository {
     /// format it should follow is as follows.
     pub fn status(&mut self) -> Result<String, GitError> {
         info!("status >> ");
-        self.load_basic_info();
+        assert!(self.load_basic_info().is_ok());
         let mut msg: Vec<String> = vec![];
         msg.push(self.branch_status()?);
         msg.push(self.staged_status()?);
@@ -379,14 +389,16 @@ impl GitRepository {
             .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
         Ok(())
     }
+
     /// persistence staged area
-    /// 1. serialize StageArea into json string
+    /// e.g serialize StageArea into json string
     fn persist_string<T: Serialize>(value: &T) -> Result<String, GitError> {
         // let mut content = String::new();
         let content = serde_json::to_string(&value)
             .map_err(|e| GitError::SerdeOpError(format!("{:?}", e)))?;
         Ok(content)
     }
+
     fn unpersist_commit(path: &PathBuf) -> Result<Commit, GitError> {
         info!("unpersist_commit {}", path.display());
         if !path.exists() || !path.is_file() {
@@ -405,6 +417,7 @@ impl GitRepository {
             Ok(commit)
         }
     }
+    /// unpersistence staged area
     fn unpersist_staging_area(path: &PathBuf) -> Result<StagingArea, GitError> {
         if !path.exists() || !path.is_file() {
             Err(GitError::FileNotExistError(path.display().to_string()))
@@ -440,14 +453,7 @@ mod tests {
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
     }
-    #[test]
-    fn it_works() {
-        init();
 
-        info!("This record will be captured by `cargo test`");
-
-        assert_eq!(2, 1 + 1);
-    }
     #[test]
     fn init_repo_dir_ut() {
         init();
@@ -541,7 +547,7 @@ mod tests {
             content.as_str()
         );
         let mut git = GitRepository::new();
-        git.load_basic_info();
+        assert!(git.load_basic_info().is_ok());
         let res = git.staged_status();
         assert!(res.is_ok(), "{:?}", res);
         assert_eq!(
@@ -583,7 +589,7 @@ smoke_ut/f3"#,
         );
 
         let mut git = GitRepository::new();
-        git.load_basic_info();
+        assert!(git.load_basic_info().is_ok());
         let res = git.removal_status();
         assert!(res.is_ok(), "{:?}", res);
         assert_eq!(
@@ -611,7 +617,7 @@ smoke_ut/f1"#,
         assert_eq!(prev_commit, commit.parent);
 
         let mut git = GitRepository::new();
-        git.load_basic_info();
+        assert!(git.load_basic_info().is_ok());
         let res = git.branch_status();
         assert!(res.is_ok(), "{:?}", res);
         assert_eq!(
@@ -820,5 +826,14 @@ smoke_ut/f1"#,
             ]),
             new_blobs
         );
+    }
+
+    #[test]
+    fn persist_string_ut() {
+        init();
+        let mut staging_area = StagingArea::new();
+        staging_area.add("a".to_string(), "b".to_string());
+        let content = GitRepository::persist_string(&staging_area).unwrap();
+        assert_eq!(content, "{\"staged\":{\"a\":\"b\"},\"deleted\":{}}");
     }
 }

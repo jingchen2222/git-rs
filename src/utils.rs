@@ -49,7 +49,7 @@ mod tests {
 
     #[test]
     fn crypto_file_ut() {
-        let tmp_dir_path = &env::current_dir().unwrap().join("temp_utils");
+        let tmp_dir_path = &env::current_dir().unwrap().join("crypto_file_ut");
         if !tmp_dir_path.exists() {
             assert!(fs::create_dir(&tmp_dir_path).is_ok());
         }
@@ -64,5 +64,31 @@ mod tests {
         if tmp_dir_path.exists() {
             assert!(fs::remove_dir_all(tmp_dir_path).is_ok());
         }
+    }
+
+    #[test]
+    fn copy_to_ut() {
+        let tmp_dir_path = &env::current_dir().unwrap().join("copy_to_ut");
+        if !tmp_dir_path.exists() {
+            assert!(fs::create_dir(&tmp_dir_path).is_ok());
+        }
+        let file_path = tmp_dir_path.join("copy_to_ut");
+        let mut file = fs::File::create(&file_path).unwrap();
+        assert!(file
+            .write("This is a demo content for copy_to_ut".as_bytes())
+            .is_ok());
+        let dist_path = tmp_dir_path.join("copy_to_ut_dist");
+        assert!(copy_to(&file_path, &dist_path).is_ok());
+        assert!(dist_path.exists());
+        assert!(dist_path.is_file());
+        if tmp_dir_path.exists() {
+            assert!(fs::remove_dir_all(tmp_dir_path).is_ok());
+        }
+    }
+
+    #[test]
+    fn crypto_string_ut() {
+        let hash = crypto_string("This is a demo content for crypto_string_ut");
+        assert_eq!("cc9eef9cdbe8b198eddf07651446ad9cdf1446f3", hash);
     }
 }
