@@ -2,6 +2,7 @@ use crate::error::GitError;
 use crypto;
 use crypto::digest::Digest;
 use log::info;
+use serde::Serialize;
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
@@ -15,14 +16,19 @@ pub fn crypto_file(path: &PathBuf) -> Result<String, GitError> {
         let mut s = String::new();
         file.read_to_string(&mut s)
             .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
-        let mut hasher = crypto::sha1::Sha1::new();
-        hasher.input_str(s.as_str());
-        Ok(hasher.result_str())
+        Ok(crypto_string(s.as_str()))
     } else {
         Err(GitError::FileNotExistError(path.display().to_string()))
     }
 }
-
+/// persistence Serialize object to string
+/// e.g serialize StageArea into json string
+pub fn sha1<T: Serialize>(value: &T) -> Result<String, GitError> {
+    // let mut content = String::new();
+    let content =
+        serde_json::to_string(&value).map_err(|e| GitError::SerdeOpError(format!("{:?}", e)))?;
+    Ok(crypto_string(&content))
+}
 /// crypto string to sha1
 pub fn crypto_string(content: &str) -> String {
     let mut hasher = crypto::sha1::Sha1::new();
@@ -44,8 +50,17 @@ pub fn copy_to(path: &PathBuf, dist: &PathBuf) -> Result<(), GitError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::repo::Commit;
     use std::io::Write;
     use std::{env, fs};
+
+    /// unit test for sha1 Commit object
+    #[test]
+    fn sha1_commit_ut() {
+        let commit = Commit::new();
+        let sha1 = sha1(&commit).unwrap();
+        assert_eq!("a4afecc02e1a215819ddec84b69e1b51b7b27821", sha1);
+    }
 
     #[test]
     fn crypto_file_ut() {

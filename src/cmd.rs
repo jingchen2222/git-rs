@@ -1,4 +1,4 @@
-use crate::repo::GitRepository;
+use crate::repo::{GitRepository, GIT_DIR};
 use clap::Parser;
 #[derive(Debug, Parser)]
 #[clap(name = "git-rs")]
@@ -83,11 +83,35 @@ pub enum GitCommand {
     ///
     #[clap(name = "status")]
     Status {},
+
+    /// Usage: git log
+    /// Description: Displays information about each commit backwards along the commit tree
+    /// starting at the current head commit, until the initial commit. For every commit, it
+    /// should display the commit id, the time the commit was made, the commit message,
+    /// and the ids of all of its parents, one per line. See the examples below for the exact
+    /// format it should follow.
+    /// Example:
+    /// ===
+    /// commit a0da1ea5a15ab613bf9961fd86f010cf74c7ee48
+    /// Date: Thu Nov 9 20:00:05 2017 -0800
+    /// A commit message.
+    ///
+    /// ===
+    /// commit 3e8bf1d794ca2e9ef8a4007275acf3751c7170ff
+    /// Date: Thu Nov 9 17:01:33 2017 -0800
+    /// Another commit message.
+    ///
+    /// ===
+    /// commit e881c9575d180a215d1a636545b8fd9abfb1d2bb
+    /// Date: Wed Dec 31 16:00:00 1969 -0800
+    /// initial commit
+    #[clap(name = "log")]
+    Log {},
 }
 
 impl GitCommand {
     pub fn execute(self) {
-        let mut repo = GitRepository::new();
+        let mut repo = GitRepository::new(GIT_DIR);
         match self {
             GitCommand::Init {} => match repo.init() {
                 Ok(_) => {
@@ -119,6 +143,14 @@ impl GitCommand {
                 }
             },
             GitCommand::Status {} => match repo.status() {
+                Ok(msg) => {
+                    println!("{}", msg);
+                }
+                Err(err) => {
+                    println!("{:?}", err);
+                }
+            },
+            GitCommand::Log {} => match repo.log() {
                 Ok(msg) => {
                     println!("{}", msg);
                 }
