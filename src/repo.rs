@@ -1,6 +1,6 @@
 use crate::error::GitError;
 use crate::utils;
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::{env, fs};
 
 /// git repository directory
-const GIT_DIR: &str = ".git-rs";
+pub const GIT_DIR: &str = ".git-rs";
 /// git blobs directory
 const BLOBS_DIR: &str = "blobs";
 /// git commits directory
@@ -47,13 +47,13 @@ impl StagingArea {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 struct CommitMeta {
     message: String,
     date_time: i64,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Commit {
     meta: CommitMeta,
     blobs: BTreeMap<String, String>,
@@ -71,8 +71,41 @@ impl Commit {
             parent: String::new(),
         }
     }
+
+    /// Create an initial commit
+    pub fn init_commit() -> Self {
+        Self {
+            meta: CommitMeta {
+                message: "initial commit".to_string(),
+                date_time: Utc::now().timestamp(),
+            },
+            blobs: BTreeMap::new(),
+            parent: String::new(),
+        }
+    }
 }
 
+/// implement Display trait for Commit
+/// For example
+/// ===
+/// commit a0da1ea5a15ab613bf9961fd86f010cf74c7ee48
+/// Date: Thu Nov 9 20:00:05 2017 -0800
+/// A commit message.
+///
+impl std::fmt::Display for Commit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #![allow(deprecated)]
+        let date_time = Utc.timestamp(self.meta.date_time, 0);
+        let date_time_str = date_time.format("%a %b %e %T %Y %z").to_string();
+        write!(
+            f,
+            "===\ncommit {}\nDate: {}\n{}\n",
+            utils::sha1(&self).unwrap(),
+            date_time_str,
+            self.meta.message
+        )
+    }
+}
 pub struct GitRepository {
     pub repo_path: PathBuf,
     cwd: PathBuf,
@@ -88,9 +121,9 @@ pub struct GitRepository {
 }
 
 impl GitRepository {
-    pub fn new() -> Self {
+    pub fn new(git_dir: &str) -> Self {
         let cwd = &env::current_dir().unwrap();
-        let repo_path = &cwd.join(GIT_DIR);
+        let repo_path = &cwd.join(git_dir);
         Self {
             cwd: cwd.to_owned(),
             repo_path: repo_path.to_owned(),
@@ -128,15 +161,25 @@ impl GitRepository {
         Self::init_repo_dir(&self.blobs_path)?;
         Self::init_repo_dir(&self.commits_path)?;
         Self::init_repo_dir(&self.heads_path)?;
+        Self::init_repo_file(&self.index_file, "")?;
+        self.init_commit()?;
+        Ok(())
+    }
+
+    /// create init commit file and initialize the commit sha1 in main branch
+    /// and HEAD file
+    fn init_commit(&self) -> Result<(), GitError> {
+        let commit = Commit::init_commit();
+        let sha1 = utils::sha1(&commit)?;
+        Self::persist(&commit, &self.commits_path.join(&sha1))?;
+        Self::init_repo_file(&self.heads_path.join(&self.branch), sha1.as_str())?;
         Self::init_repo_file(&self.heads_path.join(MAIN_BRANCH), "")?;
         Self::init_repo_file(
             &self.head_file,
             format!("{}/{}", HEADS_DIR, MAIN_BRANCH).as_str(),
         )?;
-        Self::init_repo_file(&self.index_file, "")?;
         Ok(())
     }
-
     fn init_repo_file(path: &PathBuf, content: &str) -> Result<(), GitError> {
         if !path.exists() {
             let mut file =
@@ -254,8 +297,7 @@ impl GitRepository {
             blobs,
             parent: self.commit_sha1.clone(),
         };
-        let content = Self::persist_string(&self.commit)?;
-        self.commit_sha1 = utils::crypto_string(content.as_str());
+        self.commit_sha1 = utils::sha1(&self.commit)?;
         self.persist_basic_info()?;
         Ok(())
     }
@@ -332,6 +374,19 @@ impl GitRepository {
         Ok(msg.join("\n\n"))
     }
 
+    pub fn log(&mut self) -> Result<String, GitError> {
+        info!("log >> ");
+        self.load_basic_info()?;
+        let mut msg: Vec<String> = vec![];
+        let mut commit = self.commit.clone();
+        while commit.parent != "" {
+            msg.push(format!("{}\n\n", commit));
+            commit = Self::unpersist_commit(&self.commits_path.join(&commit.parent))?;
+        }
+        msg.push(format!("{}\n\n", commit));
+        info!("log << ");
+        Ok(msg.join("\n"))
+    }
     /// add file under path into staging area
     /// 1. check if added file has been modified
     fn add_file(&mut self, path: &PathBuf) -> Result<(), GitError> {
@@ -390,15 +445,6 @@ impl GitRepository {
         Ok(())
     }
 
-    /// persistence staged area
-    /// e.g serialize StageArea into json string
-    fn persist_string<T: Serialize>(value: &T) -> Result<String, GitError> {
-        // let mut content = String::new();
-        let content = serde_json::to_string(&value)
-            .map_err(|e| GitError::SerdeOpError(format!("{:?}", e)))?;
-        Ok(content)
-    }
-
     fn unpersist_commit(path: &PathBuf) -> Result<Commit, GitError> {
         info!("unpersist_commit {}", path.display());
         if !path.exists() || !path.is_file() {
@@ -444,8 +490,8 @@ mod tests {
     use super::*;
     use std::io::Read;
 
-    fn clean_repo() {
-        let path = &env::current_dir().unwrap().join(GIT_DIR);
+    fn clean_repo(repo_dir: &str) {
+        let path = &env::current_dir().unwrap().join(repo_dir);
         if path.exists() {
             assert!(fs::remove_dir_all(path).is_ok());
         }
@@ -468,6 +514,7 @@ mod tests {
     fn smoke_ut() {
         init();
         info!("This record will be captured by `cargo test`");
+        let smoke_ut_repo_dir = ".smoke_ut_repo_dir";
         let smoke_ut_dir = &env::current_dir().unwrap().join("smoke_ut");
 
         if smoke_ut_dir.exists() {
@@ -488,8 +535,8 @@ mod tests {
                 .is_ok());
         }
 
-        clean_repo();
-        let git = &mut GitRepository::new();
+        clean_repo(smoke_ut_repo_dir);
+        let git = &mut GitRepository::new(smoke_ut_repo_dir);
         assert!(!git.repo_path.exists());
 
         assert!(git.init().is_ok());
@@ -509,6 +556,8 @@ mod tests {
         assert!(git.index_file.exists());
         assert!(git.index_file.is_file());
 
+        assert!(git.heads_path.join(MAIN_BRANCH).exists());
+        assert!(git.heads_path.join(MAIN_BRANCH).is_file());
         // Act git add f1
         assert_eq!(git.branch, "main");
         assert_eq!(git.commit, Commit::new());
@@ -546,7 +595,7 @@ mod tests {
             r#"{"staged":{"smoke_ut/f1":"436e9d92cf041816563850964d9256d7b0484c46","smoke_ut/f3":"de9c94ac88cae8cd61843b1ccd1339ad507e7f49"},"deleted":{}}"#,
             content.as_str()
         );
-        let mut git = GitRepository::new();
+        let mut git = GitRepository::new(smoke_ut_repo_dir);
         assert!(git.load_basic_info().is_ok());
         let res = git.staged_status();
         assert!(res.is_ok(), "{:?}", res);
@@ -588,7 +637,7 @@ smoke_ut/f3"#,
             content.as_str()
         );
 
-        let mut git = GitRepository::new();
+        let mut git = GitRepository::new(smoke_ut_repo_dir);
         assert!(git.load_basic_info().is_ok());
         let res = git.removal_status();
         assert!(res.is_ok(), "{:?}", res);
@@ -603,7 +652,7 @@ smoke_ut/f1"#,
         let res = git.commit("commit 2nd");
         assert!(res.is_ok(), "{:?}", res);
         // Verify staging add file
-        let mut git = GitRepository::new();
+        let mut git = GitRepository::new(smoke_ut_repo_dir);
         let res = git.load_basic_info();
         assert!(res.is_ok(), "{:?}", res);
         let commit = &git.commit;
@@ -616,7 +665,7 @@ smoke_ut/f1"#,
         );
         assert_eq!(prev_commit, commit.parent);
 
-        let mut git = GitRepository::new();
+        let mut git = GitRepository::new(smoke_ut_repo_dir);
         assert!(git.load_basic_info().is_ok());
         let res = git.branch_status();
         assert!(res.is_ok(), "{:?}", res);
@@ -626,7 +675,7 @@ smoke_ut/f1"#,
             res.unwrap()
         );
 
-        clean_repo();
+        clean_repo(smoke_ut_repo_dir);
         assert!(fs::remove_dir_all(smoke_ut_dir).is_ok());
     }
 
@@ -829,11 +878,25 @@ smoke_ut/f1"#,
     }
 
     #[test]
-    fn persist_string_ut() {
-        init();
-        let mut staging_area = StagingArea::new();
-        staging_area.add("a".to_string(), "b".to_string());
-        let content = GitRepository::persist_string(&staging_area).unwrap();
-        assert_eq!(content, "{\"staged\":{\"a\":\"b\"},\"deleted\":{}}");
+    fn commit_display_ut() {
+        let commit = Commit {
+            meta: CommitMeta {
+                message: "commit display ut message".to_string(),
+                date_time: 1234567890,
+            },
+            blobs: BTreeMap::from([
+                ("file1".to_string(), "hash1".to_string()),
+                ("file2".to_string(), "hash2".to_string()),
+            ]),
+            parent: "mock_parent".to_string(),
+        };
+        assert_eq!(
+            r#"===
+commit 2c10e93442709d04bc3c048a5e7b6d4f459ab76c
+Date: Fri Feb 13 23:31:30 2009 +0000
+commit display ut message
+"#,
+            commit.to_string()
+        );
     }
 }
