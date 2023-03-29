@@ -121,5 +121,4 @@ initial commit
 ```
 
 ## Demo
-
-![demo](./doc/img/git-rs-1680047039543.mp4)
+<a href="https://asciinema.org/a/z1cJ2KCCVoDq1Yf0hQymj4TH1" target="_blank"><img src="https://asciinema.org/a/z1cJ2KCCVoDq1Yf0hQymj4TH1.svg" width="600" /></a>
