@@ -121,3 +121,5 @@ initial commit
 ```
 
 ## Demo
+
+![demo](./doc/img/git-rs-1680047039543.mp4)
