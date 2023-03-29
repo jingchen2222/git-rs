@@ -121,4 +121,4 @@ initial commit
 ```
 
 ## Demo
-[![asciicast](https://asciinema.org/a/14.png)](https://asciinema.org/a/14)
+[![asciicast](https://asciinema.org/a/z1cJ2KCCVoDq1Yf0hQymj4TH1.svg)](https://asciinema.org/a/z1cJ2KCCVoDq1Yf0hQymj4TH1)
