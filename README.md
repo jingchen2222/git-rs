@@ -121,5 +121,4 @@ initial commit
 ```
 
 ## Demo
-
-![demo](./doc/img/git-rs-1680047039543.mp4)
+[![asciicast](https://asciinema.org/a/z1cJ2KCCVoDq1Yf0hQymj4TH1.svg)](https://asciinema.org/a/z1cJ2KCCVoDq1Yf0hQymj4TH1)
