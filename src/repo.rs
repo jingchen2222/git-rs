@@ -3,8 +3,9 @@ use crate::utils;
 use chrono::{TimeZone, Utc};
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
+use std::ops::Add;
 use std::path::PathBuf;
 use std::{env, fs};
 
@@ -282,9 +283,11 @@ impl GitRepository {
         self.load_basic_info()?;
         info!("commit start...");
         for (removed_path, _) in self.staging_area.deleted.iter() {
-            fs::remove_file(&self.cwd.join(removed_path)).map_err(|_| {
-                GitError::CommitError("fail to remove file from current workspace".to_string())
-            })?;
+            if self.cwd.join(removed_path).exists() {
+                fs::remove_file(&self.cwd.join(removed_path)).map_err(|_| {
+                    GitError::CommitError("fail to remove file from current workspace".to_string())
+                })?;
+            }
         }
         let blobs = Self::generate_commit_blobs(&self.commit.blobs, &self.staging_area)
             .map_err(|e| GitError::CommitError(format!("{:?}", e)))?;
@@ -306,10 +309,111 @@ impl GitRepository {
     fn untrack_status(&self) -> Result<String, GitError> {
         Ok("=== Untracked Files ===".to_lowercase())
     }
-    /// Displays what files have been modified by not Staged For Commit
-    fn modified_not_staged(&self) -> Result<String, GitError> {
-        Ok("=== Modifications Not Staged For Commit ===".to_lowercase())
+
+    /// Collection files tracked in the current commit which have been modified but not Staged For Commit
+    fn committed_file_modified_not_stage(
+        file_sha1_map: &HashMap<String, String>,
+        commit: &BTreeMap<String, String>,
+        staged: &BTreeMap<String, String>,
+    ) -> Vec<String> {
+        file_sha1_map
+            .iter()
+            .filter(|(k, v)| {
+                commit.contains_key(k.to_owned())
+                    && commit.get(k.to_owned()) != Some(v.to_owned())
+                    && !staged.contains_key(k.to_owned())
+            })
+            .map(|(k, _)| k.clone().add(" (modified)"))
+            .collect::<Vec<String>>()
     }
+    /// Staged for addition, but with different contents than in the working directory
+    fn staged_for_addition_but_with_different_contents(
+        file_sha1_map: &HashMap<String, String>,
+        staged: &BTreeMap<String, String>,
+    ) -> Vec<String> {
+        file_sha1_map
+            .iter()
+            .filter(|(k, v)| {
+                staged.contains_key(k.to_owned()) && staged.get(k.to_owned()) != Some(v)
+            })
+            .map(|(k, _)| k.clone().add(" (modified)"))
+            .collect::<Vec<String>>()
+    }
+
+    /// Staged for addition, but deleted in the working directory.
+    fn staged_for_addition_but_deleted(
+        file_sha1_map: &HashMap<String, String>,
+        staged: &BTreeMap<String, String>,
+    ) -> Vec<String> {
+        staged
+            .iter()
+            .filter(|(k, _)| !file_sha1_map.contains_key(k.to_owned()))
+            .map(|(k, _)| k.clone().add(" (deleted)"))
+            .collect::<Vec<String>>()
+    }
+
+    /// Not staged for removal, but tracked in the current commit and deleted from the working directory.
+    fn not_staged_for_removal_but_deleted(
+        file_sha1_map: &HashMap<String, String>,
+        commit: &BTreeMap<String, String>,
+        deleted: &BTreeMap<String, String>,
+    ) -> Vec<String> {
+        commit
+            .iter()
+            .filter(|(k, _)| {
+                !file_sha1_map.contains_key(k.to_owned()) && !deleted.contains_key(k.to_owned())
+            })
+            .map(|(k, _)| k.clone().add(" (deleted)"))
+            .collect::<Vec<String>>()
+    }
+
+    /// Displays what files have been modified by not Staged For Commit
+    ///  A file in the working directory is “modified but not staged” if it is
+    /// Tracked in the current commit, changed in the working directory, but not staged; or
+    /// Staged for addition, but with different contents than in the working directory; or
+    /// Staged for addition, but deleted in the working directory; or
+    /// Not staged for removal, but tracked in the current commit and deleted from the working directory.
+    fn modified_not_staged(&self) -> Result<String, GitError> {
+        let ignore_set = HashSet::from([
+            self.repo_path.clone(),
+            self.cwd.join("target"),
+            self.cwd.join(".git"),
+            self.cwd.join(".idea"),
+            self.cwd.join(".DS_Store"),
+            self.cwd.join("doc/.DS_Store"),
+        ]); // Initialize an empty HashSet
+        let file_sha1_map: HashMap<String, String> =
+            utils::generate_file_sha1_map(&self.cwd, &ignore_set)?;
+
+        let tracked_file = Self::committed_file_modified_not_stage(
+            &file_sha1_map,
+            &self.commit.blobs,
+            &self.staging_area.staged,
+        );
+
+        let staged_file = Self::staged_for_addition_but_with_different_contents(
+            &file_sha1_map,
+            &self.staging_area.staged,
+        );
+
+        let staged_deleted_file =
+            Self::staged_for_addition_but_deleted(&file_sha1_map, &self.staging_area.staged);
+
+        let not_staged_deleted_file = Self::not_staged_for_removal_but_deleted(
+            &file_sha1_map,
+            &self.commit.blobs,
+            &self.staging_area.deleted,
+        );
+
+        let mut msg: Vec<String> = vec![];
+        msg.push("=== Modifications Not Staged For Commit ===".to_string());
+        msg.extend(tracked_file);
+        msg.extend(staged_file);
+        msg.extend(staged_deleted_file);
+        msg.extend(not_staged_deleted_file);
+        Ok(msg.join("\n"))
+    }
+
     /// Displays what files have been staged for addition
     fn staged_status(&self) -> Result<String, GitError> {
         let mut msg: Vec<String> = vec![];
@@ -411,23 +515,16 @@ impl GitRepository {
     /// 1. Unstage the file if it is currently staged for addition.
     /// 2. If the file is tracked in the current commit, stage it for removal and remove the file from the working directory if the user has not already done so (do not remove it unless it is tracked in the current commit).
     fn remove_file(&mut self, path: &PathBuf) -> Result<(), GitError> {
-        if path.exists() {
-            let relative_path = path.strip_prefix(&self.cwd).map_err(|_| {
-                GitError::StagedRemoveError(format!(
-                    "file {} is outside repository",
-                    path.display()
-                ))
-            })?;
-            let path_name = relative_path.display().to_string();
-            if self.staging_area.staged.contains_key(&path_name) {
-                self.staging_area.staged.remove(&path_name);
-                Ok(())
-            } else if self.commit.blobs.contains_key(&path_name) {
-                self.staging_area.deleted.insert(path_name, "".to_string());
-                Ok(())
-            } else {
-                Err(GitError::StagedRemoveNoReasonError)
-            }
+        let relative_path = path.strip_prefix(&self.cwd).map_err(|_| {
+            GitError::StagedRemoveError(format!("file {} is outside repository", path.display()))
+        })?;
+        let path_name = relative_path.display().to_string();
+        if self.staging_area.staged.contains_key(&path_name) {
+            self.staging_area.staged.remove(&path_name);
+            Ok(())
+        } else if self.commit.blobs.contains_key(&path_name) {
+            self.staging_area.deleted.insert(path_name, "".to_string());
+            Ok(())
         } else {
             Err(GitError::StagedRemoveNoReasonError)
         }
@@ -535,6 +632,7 @@ mod tests {
                 .is_ok());
         }
 
+        clean_repo(GIT_DIR);
         clean_repo(smoke_ut_repo_dir);
         let git = &mut GitRepository::new(smoke_ut_repo_dir);
         assert!(!git.repo_path.exists());
@@ -672,6 +770,35 @@ smoke_ut/f1"#,
         assert_eq!(
             r#"=== Branches ===
 *main"#,
+            res.unwrap()
+        );
+
+        let res = git.modified_not_staged();
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(
+            r#"=== Modifications Not Staged For Commit ==="#,
+            res.unwrap()
+        );
+
+        fs::write(
+            smoke_ut_dir.join("f3"),
+            "this is a modification content for f3",
+        )
+        .unwrap();
+        let res = git.modified_not_staged();
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(
+            r#"=== Modifications Not Staged For Commit ===
+smoke_ut/f3 (modified)"#,
+            res.unwrap()
+        );
+
+        fs::remove_file(smoke_ut_dir.join("f3")).unwrap();
+        let res = git.modified_not_staged();
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(
+            r#"=== Modifications Not Staged For Commit ===
+smoke_ut/f3 (deleted)"#,
             res.unwrap()
         );
 
@@ -898,5 +1025,65 @@ commit display ut message
 "#,
             commit.to_string()
         );
+    }
+
+    #[test]
+    fn committed_file_modified_not_stage_ut() {
+        let tmp_dir = &env::current_dir()
+            .unwrap()
+            .join("committed_file_modified_not_stage_ut");
+        if tmp_dir.exists() {
+            assert!(fs::remove_dir_all(&tmp_dir).is_ok());
+        }
+        assert!(fs::create_dir_all(tmp_dir).is_ok());
+
+        for dir in vec!["d1", "d2"] {
+            assert!(fs::create_dir_all(&tmp_dir.join(dir)).is_ok());
+        }
+
+        for path in vec!["f1", "f2", "f3", "d1/f1", "d2/f2"] {
+            let tmp_file = tmp_dir.join(path);
+            let mut file = fs::File::create(&tmp_file).unwrap();
+            assert!(file
+                .write_all(format!("demo content for {}", path).as_bytes())
+                .is_ok());
+        }
+
+        let file_sha1_map = HashMap::from([
+            ("f1".to_string(), "hash1".to_string()),
+            ("f2".to_string(), "hash2_new".to_string()),
+            ("f3".to_string(), "hash3".to_string()),
+            ("d1/f1".to_string(), "hash4".to_string()),
+            ("d2/f2".to_string(), "hash5_new".to_string()),
+        ]);
+        let commit = BTreeMap::from([
+            ("f1".to_string(), "hash1".to_string()),
+            ("f2".to_string(), "hash2".to_string()),
+            ("f4".to_string(), "hash2".to_string()),
+        ]);
+        let staged = BTreeMap::from([
+            ("f3".to_string(), "hash3".to_string()),
+            ("d2/f2".to_string(), "hash5".to_string()),
+            ("d2/f3".to_string(), "hash5".to_string()),
+        ]);
+        let deleted = BTreeMap::from([("d1/f1".to_string(), "".to_string())]);
+        assert_eq!(
+            vec!["f2 (modified)"],
+            GitRepository::committed_file_modified_not_stage(&file_sha1_map, &commit, &staged)
+        );
+        assert_eq!(
+            vec!["d2/f2 (modified)"],
+            GitRepository::staged_for_addition_but_with_different_contents(&file_sha1_map, &staged)
+        );
+        assert_eq!(
+            vec!["d2/f3 (deleted)"],
+            GitRepository::staged_for_addition_but_deleted(&file_sha1_map, &staged)
+        );
+        assert_eq!(
+            vec!["f4 (deleted)"],
+            GitRepository::not_staged_for_removal_but_deleted(&file_sha1_map, &commit, &deleted)
+        );
+
+        assert!(fs::remove_dir_all(&tmp_dir).is_ok());
     }
 }
