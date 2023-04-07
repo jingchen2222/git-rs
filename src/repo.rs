@@ -3,7 +3,7 @@ use crate::utils;
 use chrono::{TimeZone, Utc};
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::io::{Read, Write};
 use std::ops::Add;
 use std::path::PathBuf;
@@ -329,13 +329,49 @@ impl GitRepository {
         }
     }
     /// Displays Untracked Files
+    /// The final category (“Untracked Files”) is for files present in the working directory
+    /// but neither staged for addition nor tracked.
+    /// This includes files that have been staged for removal,
+    /// but then re-created without Gitlet’s knowledge.
     fn untrack_status(&self) -> Result<String, GitError> {
-        Ok("=== Untracked Files ===".to_lowercase())
+        let ignore_set = HashSet::from([
+            self.repo_path.clone(),
+            self.cwd.join("target"),
+            self.cwd.join(".git"),
+            self.cwd.join(".idea"),
+            self.cwd.join(".DS_Store"),
+            self.cwd.join("doc/.DS_Store"),
+        ]); // Initialize an empty HashSet
+        let file_sha1_map: BTreeMap<String, String> =
+            utils::generate_file_sha1_map(&self.cwd, &ignore_set)?;
+        let mut msg: Vec<String> = vec![];
+        msg.push("=== Untracked Files ===".to_string());
+        msg.extend(Self::untracked_file(
+            &file_sha1_map,
+            &self.commit.blobs,
+            &self.staging_area.staged,
+        ));
+        Ok(msg.join("\n"))
+    }
+
+    /// Untracked file
+    fn untracked_file(
+        file_sha1_map: &BTreeMap<String, String>,
+        commit: &BTreeMap<String, String>,
+        staged: &BTreeMap<String, String>,
+    ) -> Vec<String> {
+        file_sha1_map
+            .iter()
+            .filter(|(k, _)| {
+                !commit.contains_key(k.to_owned()) && !staged.contains_key(k.to_owned())
+            })
+            .map(|(k, _)| k.clone())
+            .collect()
     }
 
     /// Collection files tracked in the current commit which have been modified but not Staged For Commit
     fn committed_file_modified_not_stage(
-        file_sha1_map: &HashMap<String, String>,
+        file_sha1_map: &BTreeMap<String, String>,
         commit: &BTreeMap<String, String>,
         staged: &BTreeMap<String, String>,
     ) -> Vec<String> {
@@ -351,7 +387,7 @@ impl GitRepository {
     }
     /// Staged for addition, but with different contents than in the working directory
     fn staged_for_addition_but_with_different_contents(
-        file_sha1_map: &HashMap<String, String>,
+        file_sha1_map: &BTreeMap<String, String>,
         staged: &BTreeMap<String, String>,
     ) -> Vec<String> {
         file_sha1_map
@@ -365,7 +401,7 @@ impl GitRepository {
 
     /// Staged for addition, but deleted in the working directory.
     fn staged_for_addition_but_deleted(
-        file_sha1_map: &HashMap<String, String>,
+        file_sha1_map: &BTreeMap<String, String>,
         staged: &BTreeMap<String, String>,
     ) -> Vec<String> {
         staged
@@ -377,7 +413,7 @@ impl GitRepository {
 
     /// Not staged for removal, but tracked in the current commit and deleted from the working directory.
     fn not_staged_for_removal_but_deleted(
-        file_sha1_map: &HashMap<String, String>,
+        file_sha1_map: &BTreeMap<String, String>,
         commit: &BTreeMap<String, String>,
         deleted: &BTreeMap<String, String>,
     ) -> Vec<String> {
@@ -405,7 +441,7 @@ impl GitRepository {
             self.cwd.join(".DS_Store"),
             self.cwd.join("doc/.DS_Store"),
         ]); // Initialize an empty HashSet
-        let file_sha1_map: HashMap<String, String> =
+        let file_sha1_map: BTreeMap<String, String> =
             utils::generate_file_sha1_map(&self.cwd, &ignore_set)?;
 
         let tracked_file = Self::committed_file_modified_not_stage(
@@ -1083,7 +1119,7 @@ commit display ut message
                 .is_ok());
         }
 
-        let file_sha1_map = HashMap::from([
+        let file_sha1_map = BTreeMap::from([
             ("f1".to_string(), "hash1".to_string()),
             ("f2".to_string(), "hash2_new".to_string()),
             ("f3".to_string(), "hash3".to_string()),
@@ -1117,7 +1153,49 @@ commit display ut message
             vec!["f4 (deleted)"],
             GitRepository::not_staged_for_removal_but_deleted(&file_sha1_map, &commit, &deleted)
         );
+        assert!(fs::remove_dir_all(&tmp_dir).is_ok());
+    }
+    #[test]
+    fn untracked_file_ut() {
+        let tmp_dir = &env::current_dir().unwrap().join("untracked_file_ut");
+        if tmp_dir.exists() {
+            assert!(fs::remove_dir_all(&tmp_dir).is_ok());
+        }
+        assert!(fs::create_dir_all(tmp_dir).is_ok());
 
+        for dir in vec!["d1", "d2"] {
+            assert!(fs::create_dir_all(&tmp_dir.join(dir)).is_ok());
+        }
+
+        for path in vec!["f1", "f2", "f3", "d1/f1", "d2/f2"] {
+            let tmp_file = tmp_dir.join(path);
+            let mut file = fs::File::create(&tmp_file).unwrap();
+            assert!(file
+                .write_all(format!("demo content for {}", path).as_bytes())
+                .is_ok());
+        }
+
+        let file_sha1_map = BTreeMap::from([
+            ("f1".to_string(), "hash1".to_string()),
+            ("f2".to_string(), "hash2_new".to_string()),
+            ("f3".to_string(), "hash3".to_string()),
+            ("d1/f1".to_string(), "hash4".to_string()),
+            ("d2/f2".to_string(), "hash5_new".to_string()),
+        ]);
+        let commit = BTreeMap::from([
+            ("f1".to_string(), "hash1".to_string()),
+            ("f2".to_string(), "hash2".to_string()),
+            ("f4".to_string(), "hash2".to_string()),
+        ]);
+        let staged = BTreeMap::from([
+            ("d2/f2".to_string(), "hash5".to_string()),
+            ("d2/f3".to_string(), "hash5".to_string()),
+        ]);
+        let deleted = BTreeMap::from([("d1/f1".to_string(), "".to_string())]);
+        assert_eq!(
+            vec!["d1/f1", "f3"],
+            GitRepository::untracked_file(&file_sha1_map, &commit, &staged)
+        );
         assert!(fs::remove_dir_all(&tmp_dir).is_ok());
     }
 }
