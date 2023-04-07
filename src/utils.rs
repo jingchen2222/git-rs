@@ -3,7 +3,7 @@ use crypto;
 use crypto::digest::Digest;
 use log::info;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
@@ -77,8 +77,8 @@ fn visit_dirs(
 pub fn generate_file_sha1_map(
     dir: &PathBuf,
     ignore: &HashSet<PathBuf>,
-) -> Result<HashMap<String, String>, GitError> {
-    let mut file_sha1_map = HashMap::new();
+) -> Result<BTreeMap<String, String>, GitError> {
+    let mut file_sha1_map = BTreeMap::new();
     if dir.exists() && dir.is_dir() {
         let mut paths = Vec::new();
         visit_dirs(dir, &mut paths, ignore)?;
