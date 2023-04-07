@@ -107,6 +107,18 @@ pub enum GitCommand {
     /// initial commit
     #[clap(name = "log")]
     Log {},
+
+    /// Usage: git branch [branch name]
+    /// Creates a new branch with the given name, and points it at the current head commit.
+    /// A branch is nothing more than a name for a reference (a SHA-1 identifier) to a commit node.
+    /// This command does NOT immediately switch to the newly created branch (just as in real Git).
+    /// Before you ever call branch, your code should be running with a default branch called “master”.
+    /// Failure cases: If a branch with the given name already exists, print the error message A branch with that name already exists.
+    #[clap(name = "branch")]
+    Branch {
+        #[arg(required = true)]
+        name: String,
+    },
 }
 
 impl GitCommand {
@@ -154,6 +166,12 @@ impl GitCommand {
                 Ok(msg) => {
                     println!("{}", msg);
                 }
+                Err(err) => {
+                    println!("{:?}", err);
+                }
+            },
+            GitCommand::Branch { name } => match repo.branch(name.as_str()) {
+                Ok(_) => {}
                 Err(err) => {
                     println!("{:?}", err);
                 }
