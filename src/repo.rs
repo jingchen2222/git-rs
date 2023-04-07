@@ -305,6 +305,29 @@ impl GitRepository {
         Ok(())
     }
 
+    /// Branch
+    pub fn branch(&mut self, name: &str) -> Result<(), GitError> {
+        self.load_basic_info()?;
+        let branch_file = self.heads_path.join(name);
+        if branch_file.exists() {
+            Err(GitError::BranchError(format!(
+                "branch {} already exists",
+                name
+            )))
+        } else {
+            self.branch = branch_file
+                .strip_prefix(&self.repo_path)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            fs::write(&branch_file, &self.commit_sha1)
+                .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+            fs::write(&self.head_file, self.branch.as_bytes())
+                .map_err(|e| GitError::FileOpError(format!("{:?}", e)))?;
+            Ok(())
+        }
+    }
     /// Displays Untracked Files
     fn untrack_status(&self) -> Result<String, GitError> {
         Ok("=== Untracked Files ===".to_lowercase())
@@ -802,6 +825,17 @@ smoke_ut/f3 (deleted)"#,
             res.unwrap()
         );
 
+        let mut git = GitRepository::new(smoke_ut_repo_dir);
+        let res = git.branch("new_branch");
+        assert!(res.is_ok(), "{:?}", res);
+        let res = git.branch_status();
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(
+            r#"=== Branches ===
+*new_branch
+main"#,
+            res.unwrap()
+        );
         clean_repo(smoke_ut_repo_dir);
         assert!(fs::remove_dir_all(smoke_ut_dir).is_ok());
     }
